@@ -87,7 +87,8 @@ install_file() {
     fi
     mkdir -p "$(dirname "$dst")"
     if [[ -f "$dst" ]]; then
-        local backup="${dst}.rice-backup.$(date +%Y%m%d-%H%M%S)"
+        local backup
+        backup="${dst}.rice-backup.$(date +%Y%m%d-%H%M%S)"
         cp -a "$dst" "$backup"
         log_info "backed up existing $dst to $(basename "$backup")"
     fi

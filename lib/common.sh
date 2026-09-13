@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Single entry point for the shared runtime. Every phase script sources this.
 
+# shellcheck source-path=SCRIPTDIR
+
 [[ -n "${RICE_COMMON_LOADED:-}" ]] && return 0
 RICE_COMMON_LOADED=1
 
