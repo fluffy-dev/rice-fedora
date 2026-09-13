@@ -146,7 +146,7 @@ Package installation, taken from `docs/fedora_guide.md` of the upstream repo:
 ```bash
 sudo dnf install -y waybar rofi swaync kitty fastfetch fish direnv zoxide eza
 sudo dnf copr enable -y scottames/awww      && sudo dnf install -y awww
-sudo dnf copr enable -y solopasha/hyprland  && sudo dnf install -y mpvpaper hypridle hyprlock nwg-look
+sudo dnf copr enable -y eli-xciv/hyprland   && sudo dnf install -y mpvpaper hypridle hyprlock nwg-look
 sudo dnf copr enable -y atim/starship       && sudo dnf install -y starship
 sudo dnf install -y jq ImageMagick python3-gobject gtk-layer-shell vte291 python3-pip
 sudo dnf install -y wl-clipboard cliphist slurp mpv imv
@@ -155,6 +155,13 @@ sudo dnf install -y thunar thunar-archive-plugin thunar-volman file-roller gvfs 
 sudo dnf install -y google-noto-sans-cjk-fonts google-noto-emoji-fonts google-noto-fonts-common
 pip install --user colorthief
 ```
+
+Note the COPR substitution. Upstream's Fedora guide and this spec's first draft both
+named `solopasha/hyprland`, which the Copr API confirms builds for `fedora-rawhide`
+only. On Fedora 44 that repo fails to enable and silently takes `hypridle`,
+`hyprlock`, `mpvpaper` and `nwg-look` with it. `eli-xciv/hyprland` has real
+fedora-43/44/45 builds. Because it also ships `cliphist` and `waybar-git`, it is
+constrained so it cannot win a version comparison against the distro packages.
 
 `hypridle` and `hyprlock` come from a Hyprland COPR but are used under Niri as well.
 They speak the generic `ext-session-lock-v1` protocol, which Niri implements, so the
@@ -170,16 +177,29 @@ Then the upstream installer is driven headlessly:
 ```bash
 git clone --depth 1 --branch v2.3.1 https://github.com/hakuimaku/hakuspace.git ~/hakuspace
 cd ~/hakuspace && chmod +x install.sh
-SHELL=/usr/bin/fish printf '2\ny\ny\ny\n' | ./install.sh
+SHELL=/usr/bin/fish printf '2\ny\ny\ny\ny\ny\ny\ny\n' | ./install.sh
 ```
 
 Three details make this work, and all three are load-bearing:
 
-1. **The answer sequence `2 y y y`.** On Fedora, `install.sh`'s package block is
-   guarded by `command -v yay` and its NixOS block by `command -v nixos-rebuild`,
-   so both are skipped. The `ly` prompt is guarded by the presence of an `ly`
-   binary, which Fedora does not install. That leaves exactly four questions:
-   window manager (`2` = Niri), deploy config, deploy scripts, deploy assets.
+1. **The answer sequence is eight answers, not four.** On Fedora, `install.sh`'s
+   package block is guarded by `command -v yay` and its NixOS block by
+   `command -v nixos-rebuild`, so both are skipped. The `ly` prompt is guarded by
+   an `ly` binary Fedora does not install. That leaves four questions in
+   `install.sh` itself: window manager (`2` = Niri), deploy config, deploy
+   scripts, deploy assets.
+
+   But step 6 runs `(cd "$ARCHIVE_DIR" && ./setup.sh)`, and that child shares the
+   parent's stdin. `hakuspace-archive/setup.sh` asks four more questions of its
+   own: Bibata cursor theme, Tela icon theme, Midnight Gray theme, and copying
+   wallpapers. Four plus four is eight.
+
+   This is worth stating plainly because the failure is invisible. With only four
+   answers the archive's `read` calls hit EOF, return empty, every asset install
+   is skipped, and `install.sh` still prints that the archive setup completed.
+   The user gets no cursor theme, no icon theme and no wallpapers, with nothing in
+   the log to explain why. `read -p` does not even echo its prompt when stdin is
+   not a terminal, so the output looks identical either way.
 2. **`SHELL=/usr/bin/fish` in the environment.** The installer's final block runs
    `chsh -s "$FISH_PATH" "$USER"` unless `$SHELL` already equals the fish path.
    `chsh` prompts for a password through PAM, which would consume a piped answer
@@ -343,6 +363,8 @@ service level while being broken in practice, so a human has to look.
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Upstream reorders `install.sh` prompts | Wrong answers applied silently | Pin tag `v2.3.1`; verification asserts expected files exist afterwards |
+| Archive `setup.sh` prompt count changes | Assets silently skipped, no error | The eight-answer sequence is pinned to the tag alongside the prompt order; phase 20 greps the captured log for `[ERROR]` rather than trusting the exit code, which is always 0 |
+| `install.sh` run from the wrong directory | Dies on an unbound variable before reading any input | Phase 20 `cd`s into the clone; it uses `./scripts/*` relative paths |
 | `sudo` prompt inside piped stdin | Hang or desynchronised answers | `sudo -v` plus background keepalive before any piped section |
 | `chsh` PAM prompt | Same as above | Preset `SHELL=/usr/bin/fish` so the installer skips the branch |
 | A COPR goes stale on a new Fedora release | Missing packages | Each COPR enable is checked; failure names the package and continues, so one dead repo does not abort the run |

@@ -77,7 +77,10 @@ pkg_remove() {
 # Enable a COPR repository if it is not already enabled.
 copr_enable() {
     local repo="$1"
-    if sudo dnf copr list --enabled 2>/dev/null | grep -qiF "$repo"; then
+    # Detected from the generated repo file rather than `dnf copr list --enabled`,
+    # whose --enabled flag dnf5 does not accept.
+    local owner="${repo%%/*}" project="${repo##*/}"
+    if compgen -G "/etc/yum.repos.d/_copr*${owner}*${project}*.repo" >/dev/null 2>&1; then
         log_skip "copr already enabled: $repo"
         return 0
     fi
@@ -111,9 +114,24 @@ repo_add() {
     log_ok "added repo: $name"
 }
 
+# Import a third-party signing key. Like pkg_install, this records a failure
+# rather than propagating one: every call site is a bare statement inside a
+# function, so a non-zero return here would abort the entire phase under set -e
+# the first time a key server hiccups. A missing key degrades to the dependent
+# package failing to install, which is already handled.
 rpm_key_import() {
     local url="$1"
-    run sudo rpm --import "$url"
+    if is_dry_run; then
+        printf '  %s[dry-run]%s rpm --import %s\n' "$C_DIM" "$C_RESET" "$url"
+        return 0
+    fi
+    if sudo rpm --import "$url"; then
+        log_ok "imported key: $url"
+    else
+        log_warn "could not import signing key: $url (its packages will be skipped)"
+        rice_record_failure key "$url"
+    fi
+    return 0
 }
 
 # True when the named systemd unit exists on this system.
@@ -132,5 +150,17 @@ service_enable() {
         log_skip "already enabled: $unit"
         return 0
     fi
-    run sudo systemctl enable --now "$unit"
+    if is_dry_run; then
+        printf '  %s[dry-run]%s systemctl enable --now %s\n' "$C_DIM" "$C_RESET" "$unit"
+        return 0
+    fi
+    # --now also starts the unit, so a oneshot that exits non-zero fails here.
+    # Recorded rather than propagated, for the same reason as rpm_key_import.
+    if sudo systemctl enable --now "$unit"; then
+        log_ok "enabled: $unit"
+    else
+        log_warn "could not enable: $unit"
+        rice_record_failure service "$unit"
+    fi
+    return 0
 }

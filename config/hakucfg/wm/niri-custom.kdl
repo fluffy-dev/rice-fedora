@@ -1,0 +1,218 @@
+// Personal niri overrides, deployed to ~/hakucfg/wm/niri-custom.kdl.
+//
+// ~/.config/niri/config.kdl includes this file last, and hakuspace rewrites
+// every other ~/.config/niri/*.kdl on update, so this is the only niri file
+// that may hold anything personal.
+//
+// Merge rules, which decide where each block below can live:
+//   - environment, input, layout and binds merge key by key, last one wins.
+//   - window-rule, layer-rule, output and workspace append. A later rule wins
+//     only for the properties it names, and only for windows it matches.
+//
+// It replaces the stub hakuspace ships, whose focus-ring block is `off`.
+//
+// @@OUTPUT_NAME@@ and @@DISPLAY_SCALE@@ are substituted by phases/30-theme.sh,
+// so this file is a template and is not valid KDL until it is installed.
+
+environment {
+    // The shipped environment.kdl asks for iHD, the Intel media driver. This
+    // machine is a Radeon 680M, where iHD initialises nothing and every VA-API
+    // consumer falls back to software decode.
+    LIBVA_DRIVER_NAME "radeonsi"
+
+    // Same reason: va_gl is the VDPAU-on-top-of-VA-API shim for GPUs with no
+    // native VDPAU driver. Mesa ships a real radeonsi one.
+    VDPAU_DRIVER "radeonsi"
+
+    // The shipped config points all four input-method variables at fcitx5 and
+    // autostarts it, but fcitx5 is in no package list. English and Russian are
+    // both plain xkb layouts (see input.keyboard below), so the input method is
+    // dead weight; left pointing at fcitx, GTK and Qt apps stall on a bus name
+    // that never appears and some drop key events entirely. Empty means "use
+    // the toolkit default", which on Wayland is text-input-v3.
+    GTK_IM_MODULE ""
+    QT_IM_MODULE ""
+    XMODIFIERS ""
+    SDL_IM_MODULE ""
+}
+
+// environment.kdl exports DISPLAY ":0" unconditionally and nothing in the
+// shipped config ever starts an X server, so every X11-only client, the
+// JetBrains IDEs above all, connects to nothing. xwayland-satellite takes the
+// display number as its only argument, so it must be given the same :0 that is
+// already exported. The guard keeps the session log quiet if the package is
+// missing rather than retrying a spawn that cannot work.
+spawn-at-startup "sh" "-c" "command -v xwayland-satellite >/dev/null 2>&1 && exec xwayland-satellite :0"
+
+output "@@OUTPUT_NAME@@" {
+    scale @@DISPLAY_SCALE@@
+}
+
+input {
+    // Focus only windows the pointer is already fully over. Without the 0%
+    // cap, brushing the edge of a partly visible column scrolls the view out
+    // from under the cursor, which is unusable on a single narrow screen.
+    focus-follows-mouse max-scroll-amount="0%"
+
+    keyboard {
+        xkb {
+            layout "us,ru"
+            // Caps Lock switches layout, which is what macOS does between a
+            // Latin and a non-Latin source, so the habit carries over. Right
+            // Alt composes, which is how to reach the accented and typographic
+            // characters a us layout has no key for.
+            options "grp:caps_toggle,compose:ralt"
+        }
+
+        // Repeat fast enough that holding a key to move a cursor across a line
+        // of code is quicker than reaching for the arrow cluster.
+        repeat-delay 250
+        repeat-rate 40
+
+        numlock
+    }
+
+    // Pointing device sections replace rather than merge, so every option that
+    // should survive has to be repeated here, including the shipped ones.
+    touchpad {
+        tap
+        natural-scroll
+        click-method "clickfinger"
+        // The palm rests on the pad while typing, and the thumb brushes it
+        // while using the trackpoint.
+        dwt
+        dwtp
+    }
+}
+
+layout {
+    // 16px of gap around every window costs about 5% of the usable width of a
+    // 14 inch panel, which is most of a terminal column.
+    gaps 10
+
+    // The stub this file replaces switched the ring off. With border off
+    // upstream, the ring is the only thing that says which column has focus.
+    //
+    // active-color is deliberately absent. ~/.local/state/hakuspace/theme/
+    // niri-style.kdl is included immediately before this file and sets it to
+    // the generated accent, so the ring stays teal and keeps following the
+    // `accent` helper instead of being pinned to one colour here.
+    focus-ring {
+        on
+        width 3
+        inactive-color "#2A3A38"
+        urgent-color "#C05050"
+    }
+
+    // Replaces the shipped list rather than extending it. Thirds and halves are
+    // what actually fit an editor beside a terminal on a 14 inch panel.
+    preset-column-widths {
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+        proportion 1.0
+    }
+}
+
+// The shipped keybinds.kdl already binds column focus and movement (Mod+A/S and
+// the arrows), consume and expel (Mod+Ctrl+A/S, Mod+BracketLeft/BracketRight,
+// Mod+comma and Mod+period), width cycling (Mod+D, Mod+Shift+R), centring
+// (Mod+G, Mod+H), workspaces (Mod+1-9), screenshots (Print, Mod+P) and the
+// media keys. Everything here either adds a bind or deliberately takes one
+// over; the three it takes over are called out where they happen.
+binds {
+    // --- launch -------------------------------------------------------------
+    Mod+Return       hotkey-overlay-title="Terminal" { spawn "kitty"; }
+    Mod+Shift+Return hotkey-overlay-title="Floating Scratch Terminal" { spawn "kitty" "--class" "haku-scratch"; }
+    Mod+Space        hotkey-overlay-title="Application Launcher" { spawn "rofi" "-show" "drun"; }
+    Mod+Escape       hotkey-overlay-title="Lock Session" { spawn-sh "$HOME/.local/bin/lock.sh"; }
+
+    // --- close --------------------------------------------------------------
+    // Cmd+W and Cmd+Q both end a window on macOS, and neither of them opens a
+    // terminal. Takes over Mod+W (dockbar toggle, rebound below) and Mod+Q
+    // (a second terminal bind, which Mod+Return already covers).
+    Mod+W repeat=false hotkey-overlay-title="Close Window" { close-window; }
+    Mod+Q repeat=false hotkey-overlay-title="Close Window" { close-window; }
+
+    Mod+Shift+D hotkey-overlay-title="Toggle Dockbar" { spawn-sh "$HOME/.local/bin/dockbar_manager.sh --toggle"; }
+
+    // --- switching ----------------------------------------------------------
+    // The overview is this compositor's Mission Control, and Cmd+Tab is where
+    // the hand already goes to find a window. Takes over Mod+Tab; the Haku menu
+    // it displaces moves one Shift away, and Mod+Grave still opens the overview.
+    Mod+Tab       repeat=false hotkey-overlay-title="Overview" { toggle-overview; }
+    Mod+Shift+Tab hotkey-overlay-title="Haku Menu" { spawn-sh "$HOME/.local/bin/hakumenu.sh"; }
+
+    // Mod+H and Mod+L are taken upstream, so only the vertical half of hjkl is
+    // available for moving around inside a column.
+    Mod+J       { focus-window-down; }
+    Mod+K       { focus-window-up; }
+    Mod+Shift+J { move-window-down; }
+    Mod+Shift+K { move-window-up; }
+
+    // Workspaces stack vertically, and Mod+1-9 only reaches them by index.
+    Mod+Page_Down      { focus-workspace-down; }
+    Mod+Page_Up        { focus-workspace-up; }
+    Mod+Ctrl+Page_Down { move-column-to-workspace-down; }
+    Mod+Ctrl+Page_Up   { move-column-to-workspace-up; }
+
+    // Docked to an external monitor.
+    Mod+Alt+Left        { focus-monitor-left; }
+    Mod+Alt+Right       { focus-monitor-right; }
+    Mod+Shift+Alt+Left  { move-column-to-monitor-left; }
+    Mod+Shift+Alt+Right { move-column-to-monitor-right; }
+
+    // --- sizing -------------------------------------------------------------
+    // Jump straight to a width instead of cycling Mod+D round to it. Left to
+    // right across the row is narrow to wide: logs, half, editor.
+    Mod+U { set-column-width "33.333%"; }
+    Mod+I { set-column-width "50%"; }
+    Mod+O { set-column-width "66.667%"; }
+
+    // --- capture ------------------------------------------------------------
+    // Cmd+Shift+3/4/5 muscle memory.
+    Mod+Shift+3 { screenshot-screen; }
+    Mod+Shift+4 { screenshot; }
+    Mod+Shift+5 hotkey-overlay-title="Record Screen" { spawn-sh "$HOME/.local/bin/record.sh"; }
+}
+
+// The shipped rules.kdl blurs, adds noise to and doubles the saturation behind
+// every window, and dims inactive ones to 0.9. That is a full-screen shader
+// pass per frame plus a blend on an iGPU that shares its power budget with the
+// CPU. Re-declaring the same matches here switches both off: rules append, and
+// the last rule naming a property wins.
+window-rule {
+    match app-id=r#".*"#
+
+    background-effect {
+        blur false
+        xray false
+        noise 0.0
+        saturation 1.0
+    }
+}
+
+window-rule {
+    match is-active=false
+    opacity 1.0
+}
+
+window-rule {
+    match app-id="^haku-scratch$"
+
+    open-floating true
+    default-column-width { proportion 0.45; }
+}
+
+window-rule {
+    match app-id=r#"^jetbrains-"#
+    open-maximized true
+}
+
+// JetBrains draws completion popups, tooltips and the splash screen as separate
+// X11 toplevels named win0, win1 and so on. Tiled, each one takes focus and
+// pushes the editor off screen.
+window-rule {
+    match app-id=r#"^jetbrains-"# title=r#"^win\d+$"#
+    open-floating true
+}

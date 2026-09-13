@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Baseline system preparation: dnf tuning, RPM Fusion, a full upgrade and a firmware report.
+#
+# Two decisions are deliberate and easy to undo by accident. First, the dnf keys are
+# written inside the [main] section instead of appended to the end of dnf.conf, because
+# a key that lands after a later section header is parsed as a setting for that section.
+# Second, install_weak_deps is left alone: dropping weak dependencies on a laptop also
+# drops firmware and hardware-support packages, and a missing device driver costs more
+# than the disk space it saves.
+set -euo pipefail
+RICE_ROOT="${RICE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=../lib/common.sh
+. "$RICE_ROOT/lib/common.sh"
+
+DNF_CONF="/etc/dnf/dnf.conf"
+
+# Baseline tools every later phase assumes. The two binaries that already exist on
+# most images are requested by command rather than by package name: Fedora images
+# shipping curl-minimal cannot install curl without an explicit swap, and there is
+# no "wget" package on current Fedora at all, only wget2-wget, which owns
+# /usr/bin/wget. Asking for the binary keeps both cases from aborting the phase.
+baseline_packages() {
+    local pkgs=(git unzip tar which)
+    command -v wget >/dev/null 2>&1 || pkgs+=(wget2-wget)
+    command -v curl >/dev/null 2>&1 || pkgs+=(curl)
+    printf '%s\n' "${pkgs[@]}"
+}
+
+# Set key=value in the [main] section of dnf.conf, replacing any existing
+# assignment and creating the section when the file does not have one.
+dnf_conf_set() {
+    local key="$1" value="$2" tmp
+    tmp="$(mktemp)"
+
+    if [[ -r "$DNF_CONF" ]]; then
+        awk -v k="$key" -v v="$value" '
+            function emit() { printf "%s=%s\n", k, v }
+            /^[[:space:]]*\[/ {
+                if (in_main && !done) { emit(); done = 1 }
+                in_main = ($0 ~ /^[[:space:]]*\[main\][[:space:]]*$/)
+                if (in_main) seen_main = 1
+                print; next
+            }
+            in_main && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
+                if (!done) { emit(); done = 1 }
+                next
+            }
+            { print }
+            END {
+                if (!seen_main) { print "[main]"; emit() }
+                else if (!done) { emit() }
+            }
+        ' "$DNF_CONF" > "$tmp"
+    else
+        printf '[main]\n%s=%s\n' "$key" "$value" > "$tmp"
+    fi
+
+    if [[ -r "$DNF_CONF" ]] && cmp -s "$DNF_CONF" "$tmp"; then
+        rm -f "$tmp"
+        log_skip "dnf.conf already sets $key=$value"
+        return 0
+    fi
+
+    if is_dry_run; then
+        rm -f "$tmp"
+        printf '  %s[dry-run]%s set %s=%s in %s\n' "$C_DIM" "$C_RESET" "$key" "$value" "$DNF_CONF"
+        return 0
+    fi
+
+    # cp onto an existing file writes through it, so the owner, mode and SELinux
+    # label of dnf.conf survive; the explicit mode only matters when it is absent.
+    chmod 0644 "$tmp"
+    sudo cp -- "$tmp" "$DNF_CONF"
+    rm -f "$tmp"
+    log_ok "set $key=$value in $DNF_CONF"
+}
+
+# Enable the RPM Fusion free and nonfree release repositories. Non-fatal: without
+# them the desktop still works, it just loses media codecs.
+rpmfusion_enable() {
+    local version urls=()
+    version="$(rpm -E %fedora)"
+
+    pkg_installed rpmfusion-free-release || \
+        urls+=("https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${version}.noarch.rpm")
+    pkg_installed rpmfusion-nonfree-release || \
+        urls+=("https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${version}.noarch.rpm")
+
+    if (( ${#urls[@]} == 0 )); then
+        log_skip "RPM Fusion free and nonfree already enabled"
+        return 0
+    fi
+
+    if run sudo dnf install -y "${urls[@]}"; then
+        log_ok "RPM Fusion free and nonfree enabled"
+    else
+        log_warn "could not enable RPM Fusion; media codecs will be missing"
+        rice_record_failure repo rpmfusion
+    fi
+}
+
+system_upgrade() {
+    log_info "upgrading every installed package, this is the slow part"
+    if run sudo dnf -y upgrade --refresh; then
+        log_ok "system is up to date"
+    else
+        log_warn "system upgrade did not complete cleanly; later phases may install older packages"
+        rice_record_failure upgrade "dnf upgrade --refresh"
+    fi
+}
+
+# Refresh the firmware metadata and report what is available. Updates are never
+# applied here: a firmware flash wants a charged battery and a human present.
+firmware_report() {
+    command -v fwupdmgr >/dev/null 2>&1 || pkg_install fwupd
+
+    if is_dry_run; then
+        printf '  %s[dry-run]%s fwupdmgr refresh --force, then fwupdmgr get-updates\n' "$C_DIM" "$C_RESET"
+        return 0
+    fi
+
+    if ! command -v fwupdmgr >/dev/null 2>&1; then
+        log_warn "fwupd is unavailable, skipping the firmware check"
+        rice_record_failure package fwupd
+        return 0
+    fi
+
+    sudo fwupdmgr refresh --force >/dev/null 2>&1 || \
+        log_warn "firmware metadata refresh failed, the report below may be stale"
+
+    local updates rc=0
+    updates="$(sudo fwupdmgr get-updates 2>&1)" || rc=$?
+    if (( rc == 0 )); then
+        log_warn "firmware updates are available, apply them yourself with: sudo fwupdmgr update"
+        printf '%s\n' "$updates" | sed 's/^/      /'
+    else
+        log_ok "no firmware updates pending"
+    fi
+}
+
+log_step "dnf configuration"
+dnf_conf_set max_parallel_downloads 10
+dnf_conf_set fastestmirror True
+dnf_conf_set defaultyes True
+
+log_step "RPM Fusion repositories"
+rpmfusion_enable
+
+log_step "system upgrade"
+system_upgrade
+
+log_step "baseline tools"
+mapfile -t BASELINE < <(baseline_packages)
+pkg_install_required "${BASELINE[@]}"
+
+log_step "firmware"
+firmware_report
+
+log_ok "system baseline ready"

@@ -65,8 +65,14 @@ set_kv() {
     [[ -f "$file" ]] || die "set_kv: no such file: $file"
     if grep -qE "^[[:space:]]*${key}=" "$file"; then
         local tmp; tmp="$(mktemp)"
-        sed -E "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$file" > "$tmp"
-        cat "$tmp" > "$file" && rm -f "$tmp"
+        sed -E "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$file" > "$tmp" || {
+            rm -f "$tmp"; die "set_kv: could not rewrite $file"
+        }
+        # cat rather than mv, to preserve the destination's ownership and mode.
+        if ! cat "$tmp" > "$file"; then
+            rm -f "$tmp"; die "set_kv: could not write $file"
+        fi
+        rm -f "$tmp"
     else
         printf '%s=%s\n' "$key" "$value" >> "$file"
     fi

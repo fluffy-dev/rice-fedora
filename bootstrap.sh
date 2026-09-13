@@ -44,6 +44,24 @@ mapfile -t PHASES < <(find "$RICE_ROOT/phases" -maxdepth 1 -name '*.sh' -type f 
 
 phase_name() { basename "$1" .sh; }
 
+ALL_NAMES=()
+for _p in "${PHASES[@]}"; do ALL_NAMES+=("$(phase_name "$_p")"); done
+
+# A typo in --only or --skip would otherwise be accepted silently and turn the
+# whole run into a no-op that exits 0.
+validate_phase_names() {
+    local given
+    for given in "$@"; do
+        local match=0 known
+        for known in "${ALL_NAMES[@]}"; do
+            [[ "$given" == "$known" ]] && { match=1; break; }
+        done
+        (( match )) || die "no such phase: $given (available: ${ALL_NAMES[*]})"
+    done
+}
+if (( ${#ONLY[@]} > 0 )); then validate_phase_names "${ONLY[@]}"; fi
+if (( ${#SKIP[@]} > 0 )); then validate_phase_names "${SKIP[@]}"; fi
+
 in_list() {
     local needle="$1"; shift
     local item
