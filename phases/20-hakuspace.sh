@@ -544,6 +544,32 @@ warn_about_moved_paths() {
 #   y  archive: Midnight Gray theme
 #   y  archive: copy the wallpapers
 # Four answers instead of eight is the dangerous failure: the archive's reads
+
+# Confirm the archive still asks exactly the four questions the answer file budgets
+# for. hakuspace itself is pinned to a tag, but hakuspace-archive has no tags and is
+# cloned from its default branch, so its prompt count is the one input to the
+# sequence that upstream can change under us. A mismatch is worth stopping for: too
+# few answers and the remaining ones are read by whatever comes next, too many and
+# the assets are skipped while install.sh still reports success.
+ARCHIVE_EXPECTED_PROMPTS=4
+
+verify_archive_prompts() {
+    local setup="$HAKUSPACE_ARCHIVE_DIR/setup.sh" found
+    [[ -r "$setup" ]] || return 0
+
+    # Matches -p whether the flags are separate (read -r -p) or combined (read -rp).
+    found="$(grep -cE '^[[:space:]]*read[[:space:]].*-[a-zA-Z]*p[[:space:]]' "$setup" || true)"
+    if [[ "$found" == "$ARCHIVE_EXPECTED_PROMPTS" ]]; then
+        log_ok "hakuspace-archive asks $found questions, as the answer file expects"
+        return 0
+    fi
+
+    log_err "hakuspace-archive asks $found questions, not $ARCHIVE_EXPECTED_PROMPTS"
+    log_err "upstream changed it, so the scripted answers no longer line up"
+    log_err "fix write_answers in this phase to match $setup, then re-run"
+    die "refusing to drive install.sh with a sequence that does not match"
+}
+
 # then hit EOF, every asset is skipped, and install.sh still reports success.
 write_answers() {
     printf '2\ny\ny\ny\ny\ny\ny\ny\n' > "$1"
@@ -631,6 +657,7 @@ run_installer() {
 
     defuse_extra_prompts
     preclone_archive
+    verify_archive_prompts
     warn_about_moved_paths
 
     [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]] || WORK_DIR="$(mktemp -d)"

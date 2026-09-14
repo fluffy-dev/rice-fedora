@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# ThinkPad tuning: power profiles, battery charge ceiling, fingerprint reader.
+# ThinkPad tuning: power profiles, battery charge ceiling, swap headroom and the
+# fingerprint reader.
 #
 # Anything whose correct fix depends on the exact SKU is reported rather than
 # changed, so a hardware regression is visible immediately instead of being
@@ -348,8 +349,116 @@ report_hardware() {
     report_gpu
 }
 
+
+# ------------------------------------------------------------------- swap -----
+
+SWAP_SUBVOL="/swap"
+SWAP_FILE="/swap/swapfile"
+
+swap_active_gb() {
+    awk '/^\/.*file/ { total += $3 } END { printf "%d", (total + 1048575) / 1048576 }' \
+        /proc/swaps 2>/dev/null || printf '0'
+}
+
+# Create a swap file sized from config.env and mount it at boot.
+#
+# Fedora ships zram and no disk swap. zram is compressed RAM, so under a genuine
+# squeeze it cannot free anything, and the OOM killer picks a victim: on this
+# machine that tends to be the IDE or a container mid-build. A file on disk turns
+# that kill into slowness instead. It is given no explicit priority, which leaves
+# it below zram's, so zram is still used first and the disk is only touched once
+# compressed RAM is exhausted.
+#
+# btrfs is the interesting case and Fedora's default. A swap file there must sit
+# on a subvolume that is never snapshotted, and must be nodatacow with no
+# compression. mkswapfile handles the file attributes; the dedicated subvolume
+# keeps it clear of the root subvolume's snapshots.
+setup_swap() {
+    log_step "swap headroom"
+
+    if [[ "${ENABLE_SWAPFILE:-true}" != "true" ]]; then
+        log_skip "ENABLE_SWAPFILE is not true, leaving swap alone"
+        return 0
+    fi
+
+    local want="${SWAPFILE_SIZE_GB:-8}"
+    if ! [[ "$want" =~ ^[0-9]+$ ]] || (( want < 1 )); then
+        log_warn "SWAPFILE_SIZE_GB is '$want', which is not a positive integer; skipping"
+        return 0
+    fi
+
+    if [[ -f "$SWAP_FILE" ]]; then
+        log_skip "$SWAP_FILE already exists ($(swap_active_gb) GB of file swap active)"
+        return 0
+    fi
+
+    local fstype
+    fstype="$(findmnt -no FSTYPE / 2>/dev/null || true)"
+    [[ -n "$fstype" ]] || { log_warn "cannot determine the root filesystem type; skipping swap"; return 0; }
+
+    local avail_gb
+    avail_gb="$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9' || true)"
+    if [[ -n "$avail_gb" ]] && (( avail_gb < want + 20 )); then
+        log_warn "only ${avail_gb} GB free on /, not creating a ${want} GB swap file"
+        rice_record_failure swap "insufficient free space"
+        return 0
+    fi
+
+    if is_dry_run; then
+        printf '  %s[dry-run]%s create a %s GB swap file at %s on %s\n' \
+            "$C_DIM" "$C_RESET" "$want" "$SWAP_FILE" "$fstype"
+        return 0
+    fi
+
+    case "$fstype" in
+        btrfs)
+            if ! sudo test -d "$SWAP_SUBVOL"; then
+                if ! sudo btrfs subvolume create "$SWAP_SUBVOL" >/dev/null; then
+                    log_warn "could not create the $SWAP_SUBVOL subvolume; skipping swap"
+                    rice_record_failure swap "btrfs subvolume create"
+                    return 0
+                fi
+            fi
+            if ! sudo btrfs filesystem mkswapfile --size "${want}g" --uuid clear "$SWAP_FILE"; then
+                log_warn "btrfs mkswapfile failed; skipping swap"
+                rice_record_failure swap "btrfs mkswapfile"
+                return 0
+            fi
+            ;;
+        ext4|xfs)
+            sudo mkdir -p "$SWAP_SUBVOL"
+            if ! sudo fallocate -l "${want}G" "$SWAP_FILE"; then
+                log_warn "could not allocate $SWAP_FILE; skipping swap"
+                rice_record_failure swap "fallocate"
+                return 0
+            fi
+            sudo chmod 0600 "$SWAP_FILE"
+            if ! sudo mkswap "$SWAP_FILE" >/dev/null; then
+                log_warn "mkswap failed; skipping swap"
+                rice_record_failure swap "mkswap"
+                return 0
+            fi
+            ;;
+        *)
+            log_warn "root filesystem is $fstype, which this phase does not handle; skipping swap"
+            return 0
+            ;;
+    esac
+
+    if sudo swapon "$SWAP_FILE"; then
+        log_ok "enabled a ${want} GB swap file at $SWAP_FILE"
+    else
+        log_warn "could not swapon $SWAP_FILE"
+        rice_record_failure swap "swapon"
+        return 0
+    fi
+
+    append_once "$SWAP_FILE none swap defaults,nofail 0 0" /etc/fstab
+}
+
 setup_power
 setup_battery
+setup_swap
 setup_fingerprint
 report_suspend
 report_hardware
