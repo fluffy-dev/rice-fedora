@@ -136,3 +136,27 @@ seed_tree() {
 
     rm -rf "$stage"
 }
+
+# The durable home for small user-facing commands: rice itself, the accent helper,
+# the project scaffolder. hakuspace moves ~/.local/bin aside on every update and
+# rollback, so nothing rice installs may live there.
+RICE_USER_BIN="$HOME/.local/share/rice/bin"
+
+# Create the durable bin directory and put it on PATH for the graphical session and
+# for fish. Every phase that installs a command calls this, because phases run alone
+# and in any order and none may assume another has already run.
+rice_user_bin_ensure() {
+    local stage
+    if [[ ! -d "$RICE_USER_BIN" ]]; then
+        run mkdir -p "$RICE_USER_BIN"
+    fi
+    stage="$(mktemp -d)"
+    # shellcheck disable=SC2016  # $PATH is literal on purpose: environment.d expands it
+    printf '# rice-managed commands, on PATH for every process the session starts.\nPATH=%s:$PATH\n' \
+        "$RICE_USER_BIN" > "$stage/60-rice-bin.conf"
+    seed_file "$stage/60-rice-bin.conf" "$HOME/.config/environment.d/60-rice-bin.conf"
+    printf '# rice-managed commands, on PATH in fish.\nfish_add_path --path %s\n' \
+        "$RICE_USER_BIN" > "$stage/rice-path.fish"
+    seed_file "$stage/rice-path.fish" "$HOME/.local/share/fish/vendor_conf.d/rice-path.fish"
+    rm -rf "$stage"
+}
