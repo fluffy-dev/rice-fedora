@@ -470,7 +470,7 @@ check_nvim_servers() {
     fi
 
     [[ -x "$MISE_SHIMS_DIR/tsc" ]] || return 0
-    version="$(cd "$HOME" && bounded 30 env MISE_NOT_FOUND_AUTO_INSTALL=false MISE_AUTO_INSTALL=false \
+    version="$(cd "$HOME" || exit 0; bounded 30 env MISE_NOT_FOUND_AUTO_INSTALL=false MISE_AUTO_INSTALL=false \
         "$MISE_SHIMS_DIR/tsc" --version </dev/null 2>/dev/null || true)"
     version="${version%%$'\n'*}"
     if [[ "$version" == "Version 7."* ]]; then
@@ -600,7 +600,7 @@ check_git_layer() {
         v_skip "delta pager" "git-delta is not installed"
         return 0
     fi
-    pager="$(cd / && git config --get core.pager 2>/dev/null || true)"
+    pager="$(cd / || exit 0; git config --get core.pager 2>/dev/null || true)"
     if [[ "$pager" != delta* ]]; then
         v_fail "delta pager" "core.pager is '${pager:-unset}'"
     elif ! (cd "$HOME" && delta --show-config </dev/null >/dev/null 2>&1); then

@@ -151,7 +151,7 @@ rice_settings_menu() {
                 ui_clear
                 label="Settings"
                 ui_box "$label" "Saving to $RICE_LOCAL_ENV"
-                rice_settings_save || true
+                rice_settings_save --rerun || true
                 ui_pause "Press any key to return to Settings"
                 ;;
             back) _rice_settings_leave_ok && return 0 ;;
