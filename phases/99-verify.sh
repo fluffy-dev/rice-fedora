@@ -121,9 +121,10 @@ check_accent() {
     fi
 }
 
-# X11-only applications, the JetBrains IDEs among them, need an X server. The
-# shipped environment.kdl points DISPLAY at one unconditionally but nothing
-# upstream ever starts it, so both halves have to hold.
+# X11-only applications, the JetBrains IDEs among them, need an X server. niri
+# has created the sockets, exported DISPLAY and managed xwayland-satellite itself
+# since v25.08, so the package has to be present and upstream's hardcoded
+# DISPLAY ":0" has to be unset, or clients dial a socket niri did not open.
 check_xwayland() {
     if command -v xwayland-satellite >/dev/null 2>&1; then
         v_pass "xwayland-satellite" "$(command -v xwayland-satellite)"
@@ -132,12 +133,16 @@ check_xwayland() {
         return 0
     fi
 
-    if pgrep -x xwayland-satellite >/dev/null 2>&1; then
-        v_pass "xwayland spawn" "running in this session"
-    elif [[ -r "$NIRI_CUSTOM" ]] && grep -q 'xwayland-satellite' "$NIRI_CUSTOM"; then
-        v_pass "xwayland spawn" "spawned at startup by niri-custom.kdl"
+    if [[ -r "$NIRI_CUSTOM" ]] && grep -qE '^[[:space:]]*DISPLAY[[:space:]]+null' "$NIRI_CUSTOM"; then
+        v_pass "DISPLAY unpinned" "niri exports the display it actually opened"
     else
-        v_fail "xwayland spawn" "nothing starts it; add a spawn-at-startup to $NIRI_CUSTOM"
+        v_fail "DISPLAY unpinned" "environment.kdl pins DISPLAY to :0; add 'DISPLAY null' to $NIRI_CUSTOM"
+    fi
+
+    if pgrep -x xwayland-satellite >/dev/null 2>&1; then
+        v_pass "xwayland running" "niri started it for this session"
+    else
+        v_skip "xwayland running" "not started yet; niri spawns it on demand for the first X11 client"
     fi
 }
 

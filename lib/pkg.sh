@@ -99,18 +99,25 @@ copr_enable() {
 
 # Write a .repo file under /etc/yum.repos.d, reading its body from stdin.
 repo_add() {
-    local name="$1" file="/etc/yum.repos.d/${1}.repo"
+    local name="$1" file="/etc/yum.repos.d/${1}.repo" body
+    body="$(cat)"
     if [[ -f "$file" ]]; then
         log_skip "repo already configured: $name"
-        cat >/dev/null   # drain stdin so the caller's heredoc does not break
         return 0
     fi
     if is_dry_run; then
-        cat >/dev/null
         printf '  %s[dry-run]%s write %s\n' "$C_DIM" "$C_RESET" "$file"
         return 0
     fi
-    sudo tee "$file" >/dev/null
+    # skip_if_unavailable defaults to false in both dnf4 and dnf5, so a third-party
+    # repo whose metadata will not load aborts every later dnf transaction instead
+    # of being ignored. It is forced on here rather than in each caller's heredoc so
+    # no repo file can be added without it.
+    printf '%s\n' "$body" | awk '
+        /^[[:space:]]*\[/ { print; print "skip_if_unavailable=1"; next }
+        /^[[:space:]]*skip_if_unavailable[[:space:]]*=/ { next }
+        { print }
+    ' | sudo tee "$file" >/dev/null
     log_ok "added repo: $name"
 }
 

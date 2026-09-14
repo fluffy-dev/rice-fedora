@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Baseline system preparation: dnf tuning, RPM Fusion, a full upgrade and a firmware report.
+# Baseline system preparation: dnf tuning, RPM Fusion, Flathub, a full upgrade and a
+# firmware report.
 #
 # Two decisions are deliberate and easy to undo by accident. First, the dnf keys are
 # written inside the [main] section instead of appended to the end of dnf.conf, because
@@ -14,6 +15,7 @@ RICE_ROOT="${RICE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 . "$RICE_ROOT/lib/common.sh"
 
 DNF_CONF="/etc/dnf/dnf.conf"
+FLATHUB_REPO_URL="https://dl.flathub.org/repo/flathub.flatpakrepo"
 
 # Baseline tools every later phase assumes. The two binaries that already exist on
 # most images are requested by command rather than by package name: Fedora images
@@ -100,6 +102,69 @@ rpmfusion_enable() {
     fi
 }
 
+# Print the options column of the system-wide flathub remote, empty when the
+# remote is absent. --show-disabled is required: a remote that was switched off
+# rather than removed does not appear in the default listing at all.
+flathub_options() {
+    flatpak remotes --system --show-disabled --columns=name,options 2>/dev/null | \
+        awk '$1 == "flathub" { print $2 }'
+}
+
+# Install flatpak and give it the complete Flathub remote, which is where the
+# video conferencing applications live: Fedora packages none of them, and the
+# filtered Flathub that Workstation's first-boot third-party prompt installs
+# hides all but a short curated list. Non-fatal, like every other repository
+# here: a desktop without Flathub still boots.
+flatpak_enable() {
+    if [[ "${ENABLE_FLATPAK:-true}" != "true" ]]; then
+        log_skip "ENABLE_FLATPAK is not true, leaving flatpak alone"
+        return 0
+    fi
+
+    pkg_install flatpak
+
+    if is_dry_run; then
+        printf '  %s[dry-run]%s flatpak remote-add flathub %s, unfiltered\n' \
+            "$C_DIM" "$C_RESET" "$FLATHUB_REPO_URL"
+        return 0
+    fi
+
+    if ! command -v flatpak >/dev/null 2>&1; then
+        log_warn "flatpak is unavailable, skipping the Flathub remote"
+        rice_record_failure package flatpak
+        return 0
+    fi
+
+    local options
+    # flathub_options ends in a pipeline, so a flatpak that errors would make this
+    # assignment non-zero and take the phase down with it under errexit.
+    options="$(flathub_options || true)"
+
+    if [[ -z "$options" ]]; then
+        if sudo flatpak remote-add --system --if-not-exists flathub "$FLATHUB_REPO_URL"; then
+            log_ok "added the Flathub remote"
+        else
+            log_warn "could not add the Flathub remote; Slack, Zoom and Teams stay unavailable"
+            rice_record_failure repo flathub
+        fi
+        return 0
+    fi
+
+    # remote-add leaves an existing remote untouched, so a Flathub that is
+    # already there but filtered or disabled has to be corrected by name.
+    if [[ "$options" != *filtered* && "$options" != *disabled* ]]; then
+        log_skip "Flathub remote already present and unfiltered"
+        return 0
+    fi
+
+    if sudo flatpak remote-modify --system --no-filter --enable flathub; then
+        log_ok "Flathub remote unfiltered and enabled"
+    else
+        log_warn "could not unfilter the Flathub remote; Slack, Zoom and Teams stay hidden"
+        rice_record_failure repo "flathub (filtered)"
+    fi
+}
+
 system_upgrade() {
     log_info "upgrading every installed package, this is the slow part"
     if run sudo dnf -y upgrade --refresh; then
@@ -153,6 +218,9 @@ system_upgrade
 log_step "baseline tools"
 mapfile -t BASELINE < <(baseline_packages)
 pkg_install_required "${BASELINE[@]}"
+
+log_step "flatpak and Flathub"
+flatpak_enable
 
 log_step "firmware"
 firmware_report

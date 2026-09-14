@@ -36,6 +36,12 @@ TOOLBOX_DIR="$HOME/.local/opt/jetbrains-toolbox"
 TOOLBOX_DATA_DIR="$HOME/.local/share/JetBrains/Toolbox"
 FISH_CONF_DIR="$HOME/.config/fish/conf.d"
 
+# The graphical session is not a shell, so `mise activate` never runs for it.
+# Shims are the shell-free entry point, and a systemd user environment drop-in is
+# how they reach every process the session spawns.
+MISE_SHIMS_DIR="$HOME/.local/share/mise/shims"
+ENVIRONMENT_D_DIR="$HOME/.config/environment.d"
+
 LAZYGIT_COPR="atim/lazygit"
 
 # ------------------------------------------------------------------- helpers --
@@ -450,6 +456,31 @@ REPO
 
 # ---------------------------------------------------------------- runtimes ---
 
+# Put mise's shims on the PATH of the whole graphical session, not just of
+# interactive shells.
+#
+# GDM starts the session through niri-session, which runs niri as a unit of the
+# systemd user manager, so a drop-in here is inherited by niri, by everything
+# niri spawns, by every desktop entry opened from rofi, and by JetBrains Toolbox
+# and each IDE it launches. Shells keep their own `mise activate`, which is the
+# richer form: it applies per-directory tool versions and env, which shims alone
+# do not.
+mise_session_path() {
+    write_user_file "$ENVIRONMENT_D_DIR/50-rice-mise.conf" <<CONF
+# Managed by the rice bootstrap (phase 40).
+#
+# Puts the mise shims on PATH for every process the graphical session starts, so
+# that GUI-launched editors and IDEs find go, node, python and the JDK. Without
+# it only interactive shells see them, because that is where mise activates.
+#
+# Read once, when the systemd user manager starts, so a change to this file
+# takes effect on the next login rather than in the next terminal.
+PATH=${MISE_SHIMS_DIR}:\$PATH
+CONF
+    log_info "mise shims exported to the session PATH via $ENVIRONMENT_D_DIR/50-rice-mise.conf"
+    log_warn "log out and back in before GUI-launched IDEs see the mise runtimes"
+}
+
 setup_mise() {
     log_step "mise runtime manager"
 
@@ -478,6 +509,8 @@ FISH
     # shellcheck disable=SC2016  # the line is written to .bashrc, it expands there
     user_line_once 'eval "$(mise activate bash)"' "$HOME/.bashrc"
 
+    mise_session_path
+
     if (( ${#MISE_RUNTIMES[@]} == 0 )); then
         log_skip "no runtimes listed in MISE_RUNTIMES"
         return 0
@@ -496,6 +529,11 @@ FISH
         fi
     done
 
+    # The session PATH entry above is inert until the shims exist, and a shim
+    # directory can be left stale by a mise old enough not to regenerate it on
+    # install. Regenerating is cheap and idempotent, so it is done unconditionally.
+    run mise reshim || log_warn "mise reshim failed; GUI-launched applications may not see every runtime"
+
     # Reclaim the versions the moving requests above superseded; mise never
     # removes them by itself, so each re-run would otherwise leave another whole
     # toolchain on disk. --yes is what keeps it from asking per version, which
@@ -507,9 +545,10 @@ FISH
 
 # --------------------------------------------------------------- jetbrains ---
 
-# Toolbox and every IDE it installs draw through XWayland by default, so this
-# section is only useful once something spawns xwayland-satellite. Phase 10
-# installs it and phase 30 spawns it from niri-custom.kdl.
+# IDEs from 2026.1 on select the JetBrains Runtime's native Wayland toolkit by
+# themselves. Anything older, and Toolbox's own window, still fall back to
+# XWayland, so the satellite X server remains a prerequisite: phase 10 installs
+# xwayland-satellite and phase 30 spawns it from niri-custom.kdl.
 setup_jetbrains() {
     log_step "JetBrains Toolbox"
     jetbrains_toolbox
@@ -642,7 +681,7 @@ StartupWMClass=jetbrains-toolbox
 DESKTOP
 }
 
-# Print the display scale to bake into the IDE options, from config.env when the
+# Print the display scale niri applies to this panel, from config.env when the
 # user pinned one and otherwise from the value phase 30 resolved for the panel and
 # recorded: phases are separate processes, so a file is the only way the computed
 # scale crosses from one to the next. Returns non-zero when neither is usable.
@@ -656,29 +695,54 @@ jetbrains_scale() {
     printf '%s\n' "$scale"
 }
 
-# JetBrains IDEs run under XWayland by default. The JetBrains Runtime ships a
-# native Wayland toolkit that fixes blurry text and scaling on fractional scales,
-# but it is opt-in per IDE, and the per-IDE vmoptions files do not exist until an
-# IDE is installed. So the recommended block is written once, for pasting.
+# Record what a Wayland session needs from a JetBrains IDE today. The per-IDE
+# vmoptions files do not exist until an IDE is installed and Toolbox rewrites them
+# on update, so nothing can be installed on their behalf; this is a note to read
+# and, for an older IDE, to paste from.
+#
+# The short answer for a current IDE is "nothing", which is why the file holds no
+# uncommented option. That is the correction it exists to record: the WLToolkit
+# and ide.ui.scale lines that were right for 2024.2 are now wrong to paste.
 jetbrains_wayland_defaults() {
-    local scale scale_line="# -Dide.ui.scale=1.25   # uncomment and match your display scale"
+    local scale
+    local scale_line="# The compositor hands its output scale to the toolkit, and -Dide.ui.scale"
     if scale="$(jetbrains_scale)"; then
-        scale_line="-Dide.ui.scale=${scale}"
+        scale_line="# niri scales this output at ${scale} and hands that to the toolkit; -Dide.ui.scale"
     fi
 
     write_user_file "$HOME/.config/JetBrains/rice-wayland.vmoptions" <<VMOPTIONS
-# Recommended JVM options for JetBrains IDEs on a Wayland session.
-# Apply per IDE: Help > Edit Custom VM Options, then paste these lines and restart.
+# Wayland notes for JetBrains IDEs. Edit per IDE with Help > Edit Custom VM
+# Options, then restart the IDE.
 #
-# WLToolkit is the JetBrains Runtime's native Wayland toolkit. Without it the IDE
-# runs through XWayland, which is where blurry fonts on fractional scaling come from.
--Dawt.toolkit.name=WLToolkit
--Dsun.java2d.uiScale.enabled=true
+# 2026.1 and newer need nothing from this file. Their launcher already passes
+# -Dawt.toolkit.name=auto, which connects to Wayland and falls back to XToolkit
+# when there is no Wayland display. Pinning WLToolkit by hand only takes that
+# fallback away, so do not.
+#
+# 2024.2 through 2025.3 still default to XToolkit, which is where blurry fonts
+# under fractional scaling come from. Those, and only those, want one line:
+#
+#   -Dawt.toolkit.name=WLToolkit
+#
+# To go back to X11 on any version, for a toolkit regression or a remote
+# display:
+#
+#   -Dawt.toolkit.name=XToolkit
+#
 ${scale_line}
+# multiplies on top of it, so setting it here scales the IDE twice. Change the
+# output scale in niri instead, or the IDE's own zoom in Settings > Appearance.
+#
+# HiDPI is on by default on Linux, so -Dsun.java2d.uiScale.enabled=true is a
+# no-op and is left out rather than carried as noise.
+#
+# Check which toolkit is live in Help > About: it reports
+# "Toolkit: sun.awt.wl.WLToolkit" on native Wayland. Help > Find Action >
+# Show HiDPI Info reports the scale the IDE actually resolved.
 VMOPTIONS
 
-    log_info "Wayland VM options written to ~/.config/JetBrains/rice-wayland.vmoptions"
-    log_info "apply them per IDE with Help > Edit Custom VM Options"
+    log_info "Wayland notes written to ~/.config/JetBrains/rice-wayland.vmoptions"
+    log_info "IDEs from 2026.1 pick the Wayland toolkit themselves; the file covers older ones"
 }
 
 # ----------------------------------------------------------------- browser ---

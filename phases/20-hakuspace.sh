@@ -157,6 +157,15 @@ install_packages() {
     # owns the wpctl the bar and the volume keys drive.
     pkg_install wl-clipboard cliphist grim slurp brightnessctl playerctl \
                 pavucontrol cava wlr-randr wireplumber
+
+    # pactl and pacat live in pulseaudio-utils, which nothing else pulls in:
+    # PipeWire's pulse shim serves the protocol but ships none of the client
+    # tools. idle_inhibit.sh reads pactl to decide whether audio is playing, and
+    # it is the condition_cmd of every hypridle listener, so without it the
+    # screen dims during a video. record.sh refuses to start without pactl, and
+    # uses pacat and pw-metadata (pipewire-utils) to hold the sink alive at a
+    # fixed rate while recording.
+    pkg_install pulseaudio-utils pipewire-utils
     pkg_install mpv imv
 
     # Upstream's autostart.kdl spawns nm-applet and blueman-applet at every

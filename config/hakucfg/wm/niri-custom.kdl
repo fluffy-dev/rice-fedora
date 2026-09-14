@@ -34,15 +34,19 @@ environment {
     QT_IM_MODULE ""
     XMODIFIERS ""
     SDL_IM_MODULE ""
+
+    // Unset, not set. niri has created the X11 sockets, exported DISPLAY and
+    // spawned xwayland-satellite itself since v25.08, and it picks whichever
+    // display number is free. environment.kdl pins DISPLAY to ":0" regardless,
+    // so if niri lands on :1 every X11 client dials a socket that is not there.
+    // null removes the pin and lets niri's own value through.
+    DISPLAY null
 }
 
-// environment.kdl exports DISPLAY ":0" unconditionally and nothing in the
-// shipped config ever starts an X server, so every X11-only client, the
-// JetBrains IDEs above all, connects to nothing. xwayland-satellite takes the
-// display number as its only argument, so it must be given the same :0 that is
-// already exported. The guard keeps the session log quiet if the package is
-// missing rather than retrying a spawn that cannot work.
-spawn-at-startup "sh" "-c" "command -v xwayland-satellite >/dev/null 2>&1 && exec xwayland-satellite :0"
+// No xwayland-satellite spawn here on purpose. niri integrates it natively from
+// v25.08 onward and Fedora 44 ships 0.8.2, comfortably past the 0.7 that needs.
+// niri creates the sockets, exports DISPLAY and manages the process lifecycle, so
+// a manual spawn would fight it for the socket rather than help.
 
 output "@@OUTPUT_NAME@@" {
     scale @@DISPLAY_SCALE@@
@@ -57,11 +61,16 @@ input {
     keyboard {
         xkb {
             layout "us,ru"
-            // Caps Lock switches layout, which is what macOS does between a
-            // Latin and a non-Latin source, so the habit carries over. Right
-            // Alt composes, which is how to reach the accented and typographic
-            // characters a us layout has no key for.
-            options "grp:caps_toggle,compose:ralt"
+            // Caps Lock is left as Caps Lock. As grp:caps_toggle it moved the
+            // whole keyboard to Cyrillic on a key that is struck by accident
+            // more often than on purpose, and nothing on this desktop says
+            // which layout is live: none of the nine waybar modes hakuspace
+            // ships carries a language module, and a waybar config here would
+            // be overwritten on the next upstream update anyway. The switch is
+            // a deliberate chord in binds below, and it announces where it
+            // landed. Right Alt composes, which is how to reach the accented
+            // and typographic characters a us layout has no key for.
+            options "compose:ralt"
         }
 
         // Repeat fast enough that holding a key to move a cursor across a line
@@ -119,7 +128,17 @@ layout {
 // Mod+comma and Mod+period), width cycling (Mod+D, Mod+Shift+R), centring
 // (Mod+G, Mod+H), workspaces (Mod+1-9), screenshots (Print, Mod+P) and the
 // media keys. Everything here either adds a bind or deliberately takes one
-// over; the three it takes over are called out where they happen.
+// over; the five it takes over are called out where they happen.
+//
+// The keys a macOS switcher reaches for without thinking are Cmd+C, V, S, A, Z,
+// F, T, W and Q, and Cmd here is Mod. Upstream points two of those at something
+// that destroys work: Mod+C closes the focused window, and Mod+Shift+V wipes the
+// clipboard history. Both are taken over below. The rest are left alone: Mod+A
+// and Mod+S move column focus, Mod+F maximises a column, Mod+Z toggles floating
+// and Mod+T raises the cava bar. Those are surprising the first time and undone
+// by pressing the same key again, which is a different class of problem from
+// losing an unsaved buffer, and moving them would cost upstream's own muscle
+// memory for no safety gained.
 binds {
     // --- launch -------------------------------------------------------------
     Mod+Return       hotkey-overlay-title="Terminal" { spawn "kitty"; }
@@ -136,12 +155,43 @@ binds {
 
     Mod+Shift+D hotkey-overlay-title="Toggle Dockbar" { spawn-sh "$HOME/.local/bin/dockbar_manager.sh --toggle"; }
 
+    // --- clipboard ----------------------------------------------------------
+    // Cmd+C is the single most reflexive key on the keyboard and upstream binds
+    // it to close-window, so a copy aimed at a window that turns out not to own
+    // a text selection throws the window away instead. Takes over Mod+C and
+    // points it at the clipboard menu, which is the nearest thing the desktop
+    // has to a copy and cannot lose anything.
+    Mod+C hotkey-overlay-title="Clipboard Menu" { spawn-sh "$HOME/.local/bin/clipboard_menu.sh"; }
+
+    // Cmd+Shift+V is paste-without-formatting on macOS and reached for almost
+    // as often as plain paste; upstream wipes the clipboard history with it.
+    // Takes over Mod+Shift+V, and the wipe moves to a chord nobody types by
+    // reflex.
+    Mod+Shift+V      hotkey-overlay-title="Clipboard Menu" { spawn-sh "$HOME/.local/bin/clipboard_menu.sh"; }
+    Mod+Ctrl+Shift+V hotkey-overlay-title="Wipe Clipboard" { spawn-sh "$HOME/.local/bin/clipboard_menu.sh --wipe"; }
+
     // --- switching ----------------------------------------------------------
-    // The overview is this compositor's Mission Control, and Cmd+Tab is where
-    // the hand already goes to find a window. Takes over Mod+Tab; the Haku menu
-    // it displaces moves one Shift away, and Mod+Grave still opens the overview.
-    Mod+Tab       repeat=false hotkey-overlay-title="Overview" { toggle-overview; }
-    Mod+Shift+Tab hotkey-overlay-title="Haku Menu" { spawn-sh "$HOME/.local/bin/hakumenu.sh"; }
+    // Cmd+Tab is a keyboard-only jump back to the window used before this one,
+    // not Mission Control: the two are different gestures and only one of them
+    // is what the hand expects from Tab. focus-window-previous is that jump.
+    // The overview, which is the Mission Control half, moves one Shift away and
+    // is still on Mod+Grave upstream. Takes over Mod+Tab; the Haku menu those
+    // two displace lands on Mod+Ctrl+Tab.
+    Mod+Tab       repeat=false hotkey-overlay-title="Previous Window" { focus-window-previous; }
+    Mod+Shift+Tab repeat=false hotkey-overlay-title="Overview" { toggle-overview; }
+    Mod+Ctrl+Tab  hotkey-overlay-title="Haku Menu" { spawn-sh "$HOME/.local/bin/hakumenu.sh"; }
+
+    // --- keyboard layout ----------------------------------------------------
+    // The us/ru switch, moved off Caps Lock. niri's own default config offers
+    // this pair on Mod+Space and Mod+Shift+Space; Mod+Space is the launcher
+    // here, and with exactly two layouts next and prev are the same move, so
+    // one bind covers it.
+    //
+    // It goes through niri msg rather than the native switch-layout action
+    // because a bind runs exactly one action, and with no language module in
+    // any waybar mode this toast is the only thing that says which layout is
+    // now live. A missing jq or notify-send costs the toast, not the switch.
+    Mod+Shift+Space hotkey-overlay-title="Switch Keyboard Layout" { spawn-sh "niri msg action switch-layout next && notify-send -a niri -t 1500 'Keyboard layout' \"$(niri msg --json keyboard-layouts | jq -r '.names[.current_idx]')\""; }
 
     // Mod+H and Mod+L are taken upstream, so only the vertical half of hjkl is
     // available for moving around inside a column.

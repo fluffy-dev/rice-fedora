@@ -20,10 +20,14 @@ THEME_STATE_FILE="$HAKU_STATE_DIR/state/state.env"
 NIRI_STYLE="$HAKU_STATE_DIR/theme/niri-style.kdl"
 WALLPAPER_DIR="$HOME/Pictures/Wallpapers"
 
-# What this phase last handed to gen_style.sh. The generated theme itself cannot
-# answer "did rice put this here or did the user?", because the accent helper
-# writes the same state file through the same script.
+# What this phase last handed to gen_style.sh: the accent, the font family and
+# the font size, since gen_style.sh is the only writer of all three. The
+# generated theme itself cannot answer "did rice put this here or did the user?",
+# because the accent helper writes the same state file through the same script.
 THEME_ACCENT_STAMP="$RICE_ACCENT_STAMP"
+
+# What hakuspace's own gen_style.sh falls back to (haku_theme.sh THEME_DEFAULT_ACCENT).
+THEME_SEED_ACCENT="#ffffff"
 
 # Phase 40 runs as its own process and cannot see the scale worked out below.
 DISPLAY_SCALE_STAMP="$RICE_DISPLAY_SCALE_STAMP"
@@ -97,6 +101,41 @@ theme_stamp() {
     printf '%s\n' "$value" > "$file"
 }
 
+# Print one field of the theme stamp, or nothing when it is not recorded.
+#
+# The stamp is `key=value` lines. A stamp written before the typography was
+# tracked holds a bare accent on its own line instead, which is read back as the
+# accent and leaves the font and size unknown.
+theme_stamp_read() {
+    local field="$1" line key legacy=""
+    [[ -r "$THEME_ACCENT_STAMP" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        if [[ "$line" != *=* ]]; then
+            legacy="$line"
+            continue
+        fi
+        key="${line%%=*}"
+        if [[ "$key" == "$field" ]]; then
+            printf '%s\n' "${line#*=}"
+            return 0
+        fi
+    done < "$THEME_ACCENT_STAMP"
+    [[ "$field" == accent ]] && printf '%s\n' "$legacy"
+    return 0
+}
+
+# Record every value gen_style.sh was just given. The accent is passed in rather
+# than read from $ACCENT because it is not always the one config.env asks for:
+# a font-only run keeps whatever colour was already on record.
+theme_stamp_write() {
+    local accent="$1"
+    is_dry_run && return 0
+    mkdir -p "$(dirname "$THEME_ACCENT_STAMP")"
+    printf 'accent=%s\nfont=%s\nsize=%s\n' "$accent" "$FONT_FAMILY" "$FONT_SIZE" \
+        > "$THEME_ACCENT_STAMP"
+}
+
 # True when gen_style.sh has to run for the given accent to be in effect.
 #
 # gen_style.sh rewrites the whole theme state, so running it unconditionally would
@@ -107,15 +146,39 @@ theme_stamp() {
 # directory looks like a fresh machine and silently overwrites that choice.
 theme_accent_needs_apply() {
     local want="${1,,}" stamped="" live=""
-    [[ -r "$THEME_ACCENT_STAMP" ]] && stamped="$(cat -- "$THEME_ACCENT_STAMP" 2>/dev/null || true)"
+    stamped="$(theme_stamp_read accent)"
     live="$(theme_state_accent || true)"
     stamped="${stamped,,}"
     live="${live,,}"
 
     [[ -n "$live" ]] || return 0
     [[ "$live" == "$want" ]] && return 1
+
+    # Upstream's install.sh runs gen_style.sh with only --font, so a fresh machine
+    # always arrives here carrying hakuspace's own default. That is a seed, not a
+    # decision, and must not be mistaken for one.
+    if [[ -z "$stamped" ]]; then
+        [[ "$live" == "$THEME_SEED_ACCENT" ]] && return 0
+        return 1
+    fi
+
     [[ "$live" == "$stamped" ]] || return 1
     return 0
+}
+
+# True when the font family or size on record differs from what config.env asks
+# for, so gen_style.sh has to run again for typography alone.
+#
+# gen_style.sh is also the only writer of FONT_FAMILY and FONT_SIZE, so a raised
+# FONT_SIZE reaches nothing on a machine whose accent already matches. The
+# generated theme cannot be asked what it was rendered at either: it holds pixel
+# values, not the arguments that produced them. The stamp is the record, and one
+# that predates this tracking answers "unknown", which counts as drift so the
+# first run after the upgrade regenerates.
+theme_typography_needs_apply() {
+    [[ "$(theme_stamp_read font)" == "$FONT_FAMILY" ]] || return 0
+    [[ "$(theme_stamp_read size)" == "$FONT_SIZE" ]] || return 0
+    return 1
 }
 
 # Confirm the generated theme really carries the requested accent.
@@ -168,6 +231,18 @@ theme_niri_accepts() {
 # changing GNOME's own font.
 theme_session_is_live() {
     [[ -n "${NIRI_SOCKET:-}" && -S "$NIRI_SOCKET" ]]
+}
+
+# Push a freshly generated theme into the running desktop, when there is one.
+theme_reload_session() {
+    if [[ ! -x "$APPLY_STYLE" ]]; then
+        log_warn "$APPLY_STYLE is missing; the generated theme is picked up at next login"
+    elif theme_session_is_live; then
+        run "$APPLY_STYLE"
+    else
+        log_skip "not inside a niri session, so there is nothing to reload"
+        log_info "the theme is already written to disk and applies at your first Niri login"
+    fi
 }
 
 # ---------------------------------------------------------------- detection ---
@@ -338,14 +413,16 @@ else
     rice_record_failure config "niri-custom.kdl"
 fi
 
-# The override spawns xwayland-satellite on the :0 that the shipped
-# environment.kdl exports unconditionally. Without it that DISPLAY points at
-# nothing and every X11-only app, the JetBrains IDEs included, fails to start.
+# niri has created the X11 sockets, exported DISPLAY and run xwayland-satellite
+# itself since v25.08, so nothing here starts it and the override deliberately
+# spawns nothing. What still has to be true is that the binary is on disk for
+# niri to run, and that the DISPLAY pin in the shipped environment.kdl is unset
+# by the override above, so clients read the display number niri actually bound.
 if command -v xwayland-satellite >/dev/null 2>&1; then
-    log_ok "xwayland-satellite found; X11 apps get a server on DISPLAY :0"
+    log_ok "xwayland-satellite installed; niri runs it and exports DISPLAY itself"
 else
     log_warn "xwayland-satellite is not installed, so X11-only apps have no X server"
-    log_warn "install it and log in again; niri-custom.kdl starts it as soon as it exists"
+    log_warn "install it and log in again; niri picks it up with no further configuration"
     rice_record_failure package "xwayland-satellite"
 fi
 
@@ -364,15 +441,7 @@ if ! theme_accent_is_usable "$ACCENT"; then
 elif [[ ! -x "$GEN_STYLE" ]]; then
     log_err "$GEN_STYLE is missing; re-run phase 20-hakuspace"
     rice_record_failure theme "gen_style.sh not installed"
-elif ! theme_accent_needs_apply "$ACCENT"; then
-    current_accent="$(theme_state_accent || true)"
-    if [[ "${current_accent,,}" == "${ACCENT,,}" ]]; then
-        log_skip "accent $ACCENT is already generated"
-    else
-        log_skip "accent left at $current_accent, config.env asks for $ACCENT"
-        log_info "that was chosen after this phase last ran; to go back: accent teal"
-    fi
-else
+elif theme_accent_needs_apply "$ACCENT"; then
     if ! run "$GEN_STYLE" --accent "$ACCENT" --font "$FONT_FAMILY" --size "$FONT_SIZE"; then
         log_err "gen_style.sh rejected accent $ACCENT; the previous theme is untouched"
         rice_record_failure theme "accent $ACCENT rejected"
@@ -381,15 +450,39 @@ else
     elif ! theme_verify_accent "$ACCENT"; then
         rice_record_failure theme "accent $ACCENT did not reach the generated theme"
     else
-        theme_stamp "$THEME_ACCENT_STAMP" "$ACCENT"
-        if [[ ! -x "$APPLY_STYLE" ]]; then
-            log_warn "$APPLY_STYLE is missing; the generated theme is picked up at next login"
-        elif theme_session_is_live; then
-            run "$APPLY_STYLE"
+        theme_stamp_write "$ACCENT"
+        theme_reload_session
+    fi
+elif theme_typography_needs_apply; then
+    # The accent is somebody else's choice or already correct, and only the
+    # typography moved. Omitting --accent is what preserves the live colour:
+    # gen_style.sh then keeps whatever is on record and rewrites the rest.
+    log_info "font or size differs from the stamp; regenerating at $FONT_FAMILY $FONT_SIZE"
+    if ! run "$GEN_STYLE" --font "$FONT_FAMILY" --size "$FONT_SIZE"; then
+        log_err "gen_style.sh rejected $FONT_FAMILY at size $FONT_SIZE; the previous theme is untouched"
+        rice_record_failure theme "font $FONT_FAMILY size $FONT_SIZE rejected"
+    elif is_dry_run; then
+        log_skip "dry-run: no theme was generated, so there is nothing to stamp"
+    else
+        live_accent="$(theme_state_accent || true)"
+        if [[ -z "$live_accent" ]]; then
+            log_err "the theme state carries no accent after regenerating the typography"
+            rice_record_failure theme "font $FONT_FAMILY size $FONT_SIZE did not reach the theme"
         else
-            log_skip "not inside a niri session, so there is nothing to reload"
-            log_info "the accent is already written to disk and applies at your first Niri login"
+            # Stamped from the live state rather than from $ACCENT, which this
+            # branch has just deliberately declined to write.
+            theme_stamp_write "$live_accent"
+            log_ok "generated $FONT_FAMILY at size $FONT_SIZE, accent left at $live_accent"
+            theme_reload_session
         fi
+    fi
+else
+    current_accent="$(theme_state_accent || true)"
+    if [[ "${current_accent,,}" == "${ACCENT,,}" ]]; then
+        log_skip "accent $ACCENT at $FONT_FAMILY $FONT_SIZE is already generated"
+    else
+        log_skip "accent left at $current_accent, config.env asks for $ACCENT"
+        log_info "that was chosen after this phase last ran; to go back: accent teal"
     fi
 fi
 
