@@ -548,7 +548,7 @@ FISH
 # IDEs from 2026.1 on select the JetBrains Runtime's native Wayland toolkit by
 # themselves. Anything older, and Toolbox's own window, still fall back to
 # XWayland, so the satellite X server remains a prerequisite: phase 10 installs
-# xwayland-satellite and phase 30 spawns it from niri-custom.kdl.
+# xwayland-satellite, and niri runs it itself, having integrated it in v25.08.
 setup_jetbrains() {
     log_step "JetBrains Toolbox"
     jetbrains_toolbox
