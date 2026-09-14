@@ -810,7 +810,7 @@ check_keyboard() {
     errors="$(bounded 30 journalctl --user -b -o cat --no-pager 2>/dev/null \
         | grep -cF 'error loading the configured xkb keymap' || true)"
     if [[ "$errors" =~ ^[0-9]+$ ]] && (( errors > 0 )); then
-        v_fail "niri keymap" "niri could not build the keymap and fell back to US only; set LAYOUT_SWITCH=alt_shift_press in config.local.env and re-run phase 30-theme"
+        v_fail "niri keymap" "niri could not build the keymap and fell back to US only; pick Alt+Shift on press in rice Settings (or set LAYOUT_SWITCH=alt_shift_press in config.local.env) and re-run phase 30-theme"
     else
         v_pass "niri keymap" "no keymap errors in this boot's journal"
     fi

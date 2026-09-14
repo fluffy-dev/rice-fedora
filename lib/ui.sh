@@ -204,16 +204,27 @@ _ui_plain() {
     UI_LEN=${#UI_PLAIN}
 }
 
-# Frame stdin in a rounded border of the given colour. Plain lines too wide for the
+# Frame stdin in a rounded border of the given colour. Lines too wide for the
 # terminal are shortened, because a box wider than the screen wraps into garbage.
+# A shortened coloured line keeps only its leading colour.
 ui_frame() {
-    local colour="${1:-$UI_MUTED}" line body="" max
+    local colour="${1:-$UI_MUTED}" line body="" max lead rest sgr
     ui_size
     max=$(( UI_COLS - 4 ))
     while IFS= read -r line || [[ -n "$line" ]]; do
         _ui_plain "$line"
-        if (( UI_LEN > max )) && [[ "$UI_PLAIN" == "$line" ]]; then
-            line="${line:0:$(( max - ${#UI_ELLIPSIS} ))}$UI_ELLIPSIS"
+        if (( UI_LEN > max )); then
+            if [[ "$UI_PLAIN" == "$line" ]]; then
+                line="${line:0:$(( max - ${#UI_ELLIPSIS} ))}$UI_ELLIPSIS"
+            else
+                lead="" rest="$line"
+                while [[ "$rest" == $'\033['*([0-9;])m* ]]; do
+                    sgr="${rest%%m*}m"
+                    lead+="$sgr"
+                    rest="${rest#"$sgr"}"
+                done
+                line="$lead${UI_PLAIN:0:$(( max - ${#UI_ELLIPSIS} ))}$UI_ELLIPSIS$UI_C_RESET"
+            fi
         fi
         body+="$line"$'\n'
     done
@@ -355,13 +366,31 @@ ui_duration() {
     printf '%dm%02ds' $(( $1 / 60 )) $(( $1 % 60 ))
 }
 
+# The process groups of a job and of every descendant, except the caller's own.
+# Tools such as coreutils timeout move into a group of their own, which a signal
+# to the job's group alone would miss.
+_ui_job_groups() {
+    local own
+    own="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')"
+    ps -A -o pid=,ppid=,pgid= 2>/dev/null | awk -v root="$1" -v own="${own:-0}" '
+        { parent[$1] = $2; group[$1] = $3 }
+        END {
+            print root
+            for (p in parent) {
+                q = p
+                while ((q in parent) && q + 0 != root + 0 && q + 0 > 1) q = parent[q]
+                if (q + 0 == root + 0 && group[p] + 0 != own + 0) print group[p]
+            }
+        }' | sort -u
+}
+
 _ui_forward_int() {
+    local sig=INT group
     UI_RUN_INTERRUPTS=$(( UI_RUN_INTERRUPTS + 1 ))
-    if (( UI_RUN_INTERRUPTS >= 3 )); then
-        kill -KILL -- "-$1" 2>/dev/null || true
-    else
-        kill -INT -- "-$1" 2>/dev/null || true
-    fi
+    (( UI_RUN_INTERRUPTS >= 3 )) && sig=KILL
+    for group in $(_ui_job_groups "$1"); do
+        kill -"$sig" -- "-$group" 2>/dev/null || true
+    done
 }
 
 # True when a process in the group is stopped, which is what reading the terminal

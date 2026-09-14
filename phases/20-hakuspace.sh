@@ -98,7 +98,15 @@ HYPR_COPR="lionheartp/Hyprland"
 HYPR_COPR_PACKAGES=(hypridle hyprlock hyprpicker mpvpaper nwg-look)
 HYPR_COPR_INCLUDEPKGS=("${HYPR_COPR_PACKAGES[@]}" xcur2png hyprlang hyprutils hyprgraphics)
 HYPR_COPR_RETIRED="eli-xciv/hyprland"
+HYPR_COPR_ATTEMPTS="${HYPR_COPR_ATTEMPTS:-3}"
+HYPR_COPR_RETRY_DELAY="${HYPR_COPR_RETRY_DELAY:-20}"
 HYPRIDLE_MIN_VERSION="0.1.8"
+# The only thing that locks the session, on idle, on lid close or before suspend.
+SESSION_LOCK_PACKAGES=(hypridle hyprlock)
+
+# Fedora's own interpreter, which carries the RPM python modules hakuspace needs.
+# A bare python3 can resolve to a mise-managed one in the user's shell.
+SYSTEM_PYTHON="/usr/bin/python3"
 
 POWERPROFILESCTL_SYSTEM="/usr/bin/powerprofilesctl"
 POWERPROFILESCTL_SHIM_MARKER="rice-powerprofilesctl-shim"
@@ -162,6 +170,24 @@ retire_hypr_copr() {
         log_warn "could not remove copr $HYPR_COPR_RETIRED; its older hypr builds stay visible to dnf"
         rice_record_failure repo "$HYPR_COPR_RETIRED (could not remove)"
     fi
+}
+
+# Enable the hypr COPR, retrying a failed enable a few times. COPR's API has
+# outages lasting minutes, dnf does not retry past them, and this COPR carries
+# the session lock, so a transient failure is worth waiting out.
+enable_hypr_copr() {
+    local owner="${HYPR_COPR%%/*}" project="${HYPR_COPR##*/}" attempt=1
+    until is_dry_run || (( attempt >= HYPR_COPR_ATTEMPTS )) \
+        || compgen -G "/etc/yum.repos.d/_copr*${owner}*${project}*.repo" >/dev/null 2>&1; do
+        if sudo dnf copr enable -y "$HYPR_COPR"; then
+            log_ok "copr enabled: $HYPR_COPR"
+            return 0
+        fi
+        log_warn "could not enable copr $HYPR_COPR (attempt $attempt of $HYPR_COPR_ATTEMPTS), retrying in ${HYPR_COPR_RETRY_DELAY}s"
+        sleep "$HYPR_COPR_RETRY_DELAY"
+        attempt=$((attempt + 1))
+    done
+    copr_enable "$HYPR_COPR"
 }
 
 # pkg_install leaves an installed package alone, so builds that arrived from the
@@ -288,7 +314,7 @@ install_packages() {
     # they work here without Hyprland, and accent_color_picker.sh shells out to
     # hyprpicker. See HYPR_COPR for why the COPR is restricted.
     retire_hypr_copr
-    if copr_enable "$HYPR_COPR"; then
+    if enable_hypr_copr; then
         copr_restrict "$HYPR_COPR" "${HYPR_COPR_INCLUDEPKGS[@]}"
         upgrade_hypr_packages
         pkg_install "${HYPR_COPR_PACKAGES[@]}"
@@ -393,35 +419,50 @@ install_nerd_font() {
 install_colorthief() {
     log_step "colorthief"
 
-    if python3 -c 'import colorthief' >/dev/null 2>&1; then
+    if "$SYSTEM_PYTHON" -c 'import colorthief' >/dev/null 2>&1; then
         log_skip "colorthief already importable"
         return 0
     fi
 
     if is_dry_run; then
-        log_info "[dry-run] python3 -m pip install --user --break-system-packages colorthief"
+        log_info "[dry-run] $SYSTEM_PYTHON -m pip install --user --break-system-packages colorthief"
         return 0
     fi
 
-    if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
-        log_warn "python3 with pip is missing, skipping colorthief"
+    if [[ ! -x "$SYSTEM_PYTHON" ]] || ! "$SYSTEM_PYTHON" -m pip --version >/dev/null 2>&1; then
+        log_warn "$SYSTEM_PYTHON with pip is missing, skipping colorthief"
         rice_record_failure python colorthief
         return 0
     fi
 
-    if ! python3 -m pip install --user --break-system-packages --quiet colorthief; then
+    if ! "$SYSTEM_PYTHON" -m pip install --user --break-system-packages --quiet colorthief; then
         log_warn "could not install colorthief; wallpaper accent extraction stays unavailable"
         rice_record_failure python colorthief
         return 0
     fi
 
     # pip can succeed while the module stays unreachable, so the import decides.
-    if python3 -c 'import colorthief' >/dev/null 2>&1; then
+    if "$SYSTEM_PYTHON" -c 'import colorthief' >/dev/null 2>&1; then
         log_ok "installed colorthief"
     else
-        log_warn "colorthief installed but is not importable by python3"
+        log_warn "colorthief installed but is not importable by $SYSTEM_PYTHON"
         rice_record_failure python "colorthief (installed but not importable)"
     fi
+}
+
+# -------------------------------------------------------------- session lock -----
+
+# Fail the phase when the session lock is missing. Without hypridle and hyprlock
+# a lid close or a suspend leaves the session unlocked, so this is not an
+# optional item, and a failed phase keeps prompting for a re-run.
+require_session_lock() {
+    is_dry_run && return 0
+    local pkg missing=()
+    for pkg in "${SESSION_LOCK_PACKAGES[@]}"; do
+        pkg_installed "$pkg" || missing+=("$pkg")
+    done
+    (( ${#missing[@]} == 0 )) && return 0
+    die "${missing[*]} did not install from copr $HYPR_COPR, so nothing locks the session on idle, lid close or suspend. COPR outages are usually brief: re-run this phase."
 }
 
 # -------------------------------------------------------- power profiles -----
@@ -1090,3 +1131,4 @@ HAKUSPACE_MARKER_PREEXISTING=0
 
 run_installer
 verify_deployment
+require_session_lock

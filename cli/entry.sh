@@ -57,9 +57,12 @@ rice_entry_gum_ready() {
 # Without gum the plain bootstrap is the only path left, and with no arguments it
 # runs every phase, a full system upgrade included, so it asks first.
 rice_entry_fallback() {
-    local answer=""
+    local answer="" prompt='Run every phase now without the menu? [y/N] '
+    if [[ "${RICE_DRY_RUN:-0}" == 1 ]]; then
+        prompt='Dry-run every phase now without the menu, modifying nothing? [y/N] '
+    fi
     printf 'rice: could not get gum, so there is no menu. The plain bootstrap runs every phase (see rice --help).\n' >&2
-    read -r -p 'Run every phase now without the menu? [y/N] ' answer </dev/tty || true
+    read -r -p "$prompt" answer </dev/tty || true
     if [[ "$answer" =~ ^[yY]([eE][sS])?$ ]]; then
         return 0
     fi

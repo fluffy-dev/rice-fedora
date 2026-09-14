@@ -9,8 +9,11 @@
 # must be in the foreground of the active window, in the active tab, of the
 # focused kitty OS window, and under niri the focused window must be that kitty.
 # Inside a Neovim terminal the buffer must also be shown in Neovim's current tab
-# page, and then Neovim is what kitty must have in front. Whatever cannot be
-# proven, such as tmux, another terminal or an unreachable socket, notifies.
+# page, and then Neovim is what kitty must have in front. Inside tmux the pane
+# must be the active pane of its session's active window, a client on that
+# session must hold terminal focus (tmux learns it through focus-events), and
+# under niri the focused window must host that client. Whatever cannot be proven,
+# such as another terminal or an unreachable socket, notifies.
 set -uo pipefail
 exec >/dev/null 2>&1
 
@@ -87,13 +90,31 @@ nvim_front() {
     printf '%s' "$out"
 }
 
+# Print the pid of niri's focused window.
+niri_focused() {
+    command -v niri >/dev/null || return 1
+    local focused
+    focused="$("${LIMIT[@]}" niri msg --json focused-window </dev/null | jq -r '.pid // empty')"
+    [[ "$focused" =~ ^[0-9]+$ ]] || return 1
+    printf '%s' "$focused"
+}
+
+# True when the second pid is the first or one of its ancestors.
+descends_from() {
+    local pid=$1 depth=0
+    while [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 && depth++ < 64 )); do
+        [[ "$pid" == "$2" ]] && return 0
+        pid="$(ps -o ppid= -p "$pid")" || return 1
+        pid="${pid//[[:space:]]/}"
+    done
+    return 1
+}
+
 # True unless niri runs and its focused window is outside this process tree.
 niri_agrees() {
     [[ -n "${NIRI_SOCKET:-}" ]] || return 0
-    command -v niri || return 1
     local focused pid
-    focused="$("${LIMIT[@]}" niri msg --json focused-window </dev/null | jq -r '.pid // empty')"
-    [[ "$focused" =~ ^[0-9]+$ ]] || return 1
+    focused="$(niri_focused)" || return 1
     for pid in "${CHAIN_PIDS[@]}"; do
         [[ "$pid" == "$focused" ]] && return 0
     done
@@ -111,18 +132,40 @@ kitty_front() {
                 and any(.foreground_processes[]?.pid; . as $p | any($pids[]; . == $p)))'
 }
 
+# True when this session's tmux pane is the active pane of its session's active
+# window and a client attached to that session has terminal focus, a client that
+# under niri must run inside the focused window. The client is not an ancestor of
+# the hook, and kitty's variables inside tmux are the tmux server's stale copies.
+tmux_front() {
+    [[ "${TMUX_PANE:-}" =~ ^%[0-9]+$ ]] && command -v tmux || return 1
+    local state sid focused="" flags cpid
+    state="$("${LIMIT[@]}" tmux display-message -p -t "$TMUX_PANE" '#{&&:#{pane_active},#{window_active}} #{session_id}' </dev/null)" || return 1
+    [[ "$state" == "1 \$"* ]] || return 1
+    sid="${state#1 }"
+    if [[ -n "${NIRI_SOCKET:-}" ]]; then
+        focused="$(niri_focused)" || return 1
+    fi
+    while read -r flags cpid; do
+        [[ ",$flags," == *,focused,* ]] || continue
+        [[ -z "$focused" ]] || descends_from "$cpid" "$focused" || continue
+        return 0
+    done < <("${LIMIT[@]}" tmux list-clients -t "$sid" -F '#{client_flags} #{client_pid}' </dev/null)
+    return 1
+}
+
 session_in_front() {
-    [[ "${KITTY_WINDOW_ID:-}" =~ ^[0-9]+$ && "${KITTY_LISTEN_ON:-}" == unix:* && -z "${TMUX:-}" ]] || return 1
-    command -v kitten && command -v ps || return 1
+    command -v ps || return 1
     load_ancestry
-    niri_agrees || return 1
-    local front
+    local front=""
     if [[ -n "${NVIM:-}" ]]; then
         command -v nvim || return 1
         front="$(IFS=,; nvim_front "${CHAIN_PIDS[*]}")" || return 1
-    else
-        front="$(front_candidates)" || return 1
     fi
+    [[ -z "${TMUX:-}" ]] || { tmux_front; return; }
+    [[ "${KITTY_WINDOW_ID:-}" =~ ^[0-9]+$ && "${KITTY_LISTEN_ON:-}" == unix:* ]] || return 1
+    command -v kitten || return 1
+    niri_agrees || return 1
+    [[ -n "$front" ]] || front="$(front_candidates)" || return 1
     kitty_front "$front"
 }
 

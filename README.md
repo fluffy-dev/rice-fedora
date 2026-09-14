@@ -109,12 +109,12 @@ password prompt at that moment would eat one of the answers.
 cd ~/rice && ./lint.sh
 ```
 
-Parses every `*.sh` in the repo plus `config.env` with the newest bash it can find
-(`/opt/homebrew/bin/bash` or `/usr/local/bin/bash` before plain `bash`, because the target runs
-bash 5 and macOS ships 3.2), then runs `shellcheck -x` over the same list. A clean run prints
-`parse ok: <n> files` and `shellcheck ok`, and exits 0. It executes nothing, so it is safe on any
-machine; without shellcheck installed it lints nothing and says so. Run it after every edit. The
-extensionless `rice` entry point is not in that list yet, so check it with `shellcheck -x rice`.
+Parses every `*.sh` in the repo plus `config.env` and the extensionless `rice` entry point with
+the newest bash it can find (`/opt/homebrew/bin/bash` or `/usr/local/bin/bash` before plain `bash`,
+because the target runs bash 5 and macOS ships 3.2), then runs `shellcheck -x` over the same list.
+A clean run prints `parse ok: <n> files` and `shellcheck ok`, and exits 0. It executes nothing, so
+it is safe on any machine; without shellcheck installed it lints nothing and says so. Run it after
+every edit.
 
 ---
 
@@ -126,7 +126,7 @@ implementation of the flags in `cli/flags.sh`.
 
 ```bash
 rice                     # the menu: Install, Update, Settings, Health, Maintain
-RICE_DRY_RUN=1 rice      # the same menu, modifying nothing
+RICE_DRY_RUN=1 rice      # the same menu, modifying nothing (needs gum already installed)
 RICE_NO_TUI=1 rice       # no menu: the plain bootstrap, like ./bootstrap.sh
 rice --only 30-theme     # any flag: the plain bootstrap with that flag
 ```
@@ -135,6 +135,8 @@ With no arguments on a terminal it needs gum 0.17 or newer, which Fedora 44 pack
 missing or older, `rice` installs or upgrades it with `sudo dnf`. A dry run never installs it.
 Without gum there is no menu, and since the plain bootstrap with no arguments runs every phase,
 a full system upgrade included, `rice` asks `Run every phase now without the menu? [y/N]` first.
+A dry run without gum has no menu either and asks the same question: answer N and run
+`rice --dry-run` instead, which previews every phase without the menu.
 
 Every action keeps its logs in `~/.local/state/rice/runs/<timestamp>-<kind>/`, one file per phase or
 step plus a `result` line, and Maintain browses them. Ctrl+C in any prompt or under any spinner ends
@@ -179,10 +181,10 @@ change is only printed.
 
 | Setting | Key | Choices |
 |---|---|---|
-| Accent colour | `ACCENT` | Teal, aqua or emerald from `config.env`, or any `#rrggbb` whose channels sum to at least 180 |
+| Accent colour | `ACCENT` | Teal (`#5EC8A8`), or aqua and emerald from `config.env`, or any `#rrggbb` whose channels sum to at least 180 |
 | Font size | `FONT_SIZE` | 11 to 16 |
 | Git identity | `GIT_NAME`, `GIT_EMAIL` | Free text; empty skips git and SSH setup |
-| Keyboard | `KEYBOARD_LAYOUTS`, `LAYOUT_SWITCH` | Layouts in xkb order, then `alt_shift`, `caps` or `none` |
+| Keyboard | `KEYBOARD_LAYOUTS`, `LAYOUT_SWITCH` | Layouts in xkb order, then `alt_shift`, `alt_shift_press`, `caps` or `none` |
 | Sleep on AC | `SUSPEND_ON_AC` | Never (`false`, the default) or like on battery (`true`) |
 | Components | `ENABLE_*` | The eleven component toggles |
 | Optional trims | `OPT_DISABLE_MODEMMANAGER`, `OPT_DISABLE_NM_WAIT_ONLINE` | Both off by default |
@@ -193,8 +195,7 @@ own lines and comments stay), and offers to re-run exactly the phases that read 
 phases those are is worked out by searching the phase scripts for the key, and a changed accent
 also re-runs every phase that renders the palette. In a dry run nothing is written, so the re-run
 phases preview the old configuration, and the screen says so. `alt_shift_press`, the keyboard
-fallback described under [Keyboard layouts](#keyboard-layouts), is not offered there: set it in
-`config.local.env` by hand.
+fallback described under [Keyboard layouts](#keyboard-layouts), is one of the choices.
 
 ### Health
 
@@ -355,8 +356,8 @@ cp ~/rice/config.env ~/rice/config.local.env   # sourced after config.env, wins
 
 `config.local.env` is sourced by `lib/common.sh` right after `config.env`, so anything it sets
 wins, and the run says so in its log. The rice Settings screen and Maintain's hakuspace move write
-only the keys they change there, creating the file when it does not exist. `.gitignore` does not
-list it, so add it there before you ever make this repo public.
+only the keys they change there, creating the file when it does not exist. `.gitignore` lists it,
+so machine-local values such as the git identity stay out of the repo.
 
 Knobs worth knowing before you change them:
 
@@ -690,8 +691,9 @@ journalctl --user -b | grep 'error loading the configured xkb keymap'   # must p
 niri msg keyboard-layouts                                               # lists both layouts
 ```
 
-Any match means niri fell back to its default US-only keymap. Set `LAYOUT_SWITCH=alt_shift_press`
-in `config.local.env` and re-run phase 30. `grp:alt_shift_toggle` is avoided outright: it also turns
+Any match means niri fell back to its default US-only keymap. Pick Alt+Shift on press in Settings
+(or set `LAYOUT_SWITCH=alt_shift_press` in `config.local.env`) and re-run phase 30.
+`grp:alt_shift_toggle` is avoided outright: it also turns
 Right Shift+Right Alt into a switch, which takes the compose key away.
 
 A mouse button does not cancel the release, so kitty's default mouse actions that are held with Alt
@@ -1317,7 +1319,7 @@ The file is truncated at the start of every real run, so it always describes the
 
 Dry-run never acquires sudo and changes nothing on the system, the phase markers included; the
 only writes are to rice's own state, such as `run-failures.txt`. `RICE_DRY_RUN=1 rice` does the
-same from the menu.
+same from the menu once gum is installed; without gum use `rice --dry-run`.
 
 **Reset the "done" markers.** They are informational only, but if you want a clean slate:
 
@@ -1405,9 +1407,10 @@ decides "on AC" itself, so a charger it does not report as online counts as batt
 
 **Alt+Shift does not switch the layout.** Run the smoke test under
 [Keyboard layouts](#keyboard-layouts). If niri logged "error loading the configured xkb keymap", it
-is running a US-only keymap: set `LAYOUT_SWITCH=alt_shift_press` in `config.local.env` and run
-`~/rice/bootstrap.sh --only 30-theme`. No notification but a working switch means `layout-notify` is
-not running: check `pgrep -af layout-notify`, and that `jq` and `notify-send` are installed.
+is running a US-only keymap: pick Alt+Shift on press in Settings (or set
+`LAYOUT_SWITCH=alt_shift_press` in `config.local.env`) and run `~/rice/bootstrap.sh --only 30-theme`.
+No notification but a working switch means `layout-notify` is not running: check
+`pgrep -af layout-notify`, and that `jq` and `notify-send` are installed.
 
 **The swaync power buttons do nothing.** tuned-ppd ships no `powerprofilesctl`. `command -v
 powerprofilesctl` should find `~/.local/share/rice/bin/powerprofilesctl`, which reaches the session
@@ -1462,8 +1465,10 @@ load-bearing for two separate reasons.
 
 1. **The answer sequence encodes a prompt order.** Eight answers go onto the installer's stdin in
    a fixed order, four of which are consumed by a second script in a different repository
-   (`hakuspace-archive`, which is cloned from `main` and is not pinned by us at all). A clone that
-   adds, removes or reorders a prompt would silently answer the wrong questions. `read -p` prints
+   (`hakuspace-archive`, which is cloned from `main` and is not pinned by us at all). Phase 20
+   counts the prompts at the checked-out tag and in the archive's `setup.sh` and refuses when a
+   count changed, but a tag that only reorders prompts keeps the counts and would still silently
+   answer the wrong questions. `read -p` prints
    nothing when stdin is a pipe and `install.sh` always exits 0, so a desync produces no error at
    all: you find out weeks later when something is missing.
 2. **The base configs are overwritten wholesale on every update**, so every upstream change to
@@ -1488,9 +1493,11 @@ and `~/.local/bin` steps, the checkout goes back and `HAKUSPACE_TAG` stays. On s
 into the moved paths. When a newer tag has been verified by hand, update `RICE_HAKUSPACE_PROMPTS`
 and `RICE_HAKUSPACE_ANSWERS` in `cli/maintain.sh`.
 
-A recorded `HAKUSPACE_TAG` also applies to phase 20 on a fresh install, and phase 20 still drives
-`install.sh` with the answers verified for v2.3.1 without re-counting its prompts at the new tag.
-**Before a fresh install at a newer tag**, review it by hand:
+A recorded `HAKUSPACE_TAG` also applies to phase 20 on a fresh install. Before driving `install.sh`
+there, phase 20 counts the prompts in `install.sh` and `scripts/functions.sh` and refuses unless they
+match the shape traced for v2.3.1 (`INSTALLER_PROMPT_SIGNATURE="11 4"`), and counts the archive's
+`setup.sh` prompts against `ARCHIVE_EXPECTED_PROMPTS=4`. A tag that only reorders prompts keeps the
+same counts and is not caught. **Before a fresh install at a newer tag**, review it by hand:
 
 ```bash
 cd ~/hakuspace
@@ -1503,7 +1510,8 @@ git diff v2.3.1..<new-tag> -- install.sh scripts/functions.sh
    the four in the `hakuspace-archive` `setup.sh`, and check nothing new is gated differently on
    Fedora (anything behind `pacman`, `yay`, `nixos-rebuild` or `ly` never fires here).
 2. Update the answer sequence in `write_answers` in `phases/20-hakuspace.sh` if the count or the
-   order changed, and the completion lines the phase asserts on if the wording changed.
+   order changed, `INSTALLER_PROMPT_SIGNATURE` (and `ARCHIVE_EXPECTED_PROMPTS`) to the new counts,
+   and the completion lines the phase asserts on if the wording changed.
 3. Bump `HAKUSPACE_TAG` in `config.env`, and match `SETTING_VERSION` in
    `config/hakucfg/setting.sh` to the new release so the "update hakucfg?" prompt never fires.
 4. Diff the shipped `src/home/.config/niri/*.kdl` against the overrides listed above, in case a
@@ -1538,8 +1546,9 @@ rice's Maintain screen keeps the pin meaningful.
   fixed list of answers fed to prompts that print nothing. The completion lines, the artefact
   check and the log scan afterwards are the only real safety nets.
 - **The asset archive is not pinned.** `install.sh` clones `hakuspace-archive` from `main`, and
-  four of the eight answers are consumed there, so a change in a repository we do not pin can
-  desynchronise a pinned hakuspace.
+  four of the eight answers are consumed there. Phase 20 refuses to drive the installer when the
+  pre-cloned archive's `setup.sh` no longer has exactly four `read -p` prompts, but a reordering,
+  or an archive the pre-clone could not fetch, still gets through unchecked.
 - **`~/hakucfg/config/hypridle.conf` is dead in v2.3.1**, which is why this repo's override lives
   at `~/hakucfg/hypridle.conf` instead. The file upstream's own menu sends you to edit is never
   sourced.

@@ -34,9 +34,9 @@ rice_update_menu() {
     ui_clear
     ui_box "Update" "Choose what to update. Each step has its own spinner and log." \
         "$(if is_dry_run; then ui_mark warn "dry run: previews run, changes are only printed"; else ui_muted "sudo is asked once for all steps"; fi)"
-    _rice_update_option dnf "System packages (dnf), including Claude Code and mise" dnf
-    _rice_update_option flatpak "Flatpak apps, system and user" flatpak
-    _rice_update_option firmware "Firmware (fwupd), applied only on AC and after asking" fwupdmgr
+    _rice_update_option dnf "System packages (dnf) with Claude Code and mise" dnf
+    _rice_update_option flatpak "Flatpak apps · system and user" flatpak
+    _rice_update_option firmware "Firmware (fwupd) · only on AC and after asking" fwupdmgr
     _rice_update_option mise "Language runtimes (mise upgrade)" mise
     _rice_update_option nvim "Neovim plugins and treesitter parsers" nvim
 
@@ -104,7 +104,7 @@ rice_update_dnf() {
     mapfile -t lines < <(awk 'NF >= 3 && $1 ~ /\.(x86_64|noarch|i686|aarch64)$/ { printf "%-48s %s\n", $1, $2 }' "$log")
     count=${#lines[@]}
     shown=("${lines[@]:0:12}")
-    (( count > 12 )) && shown+=("$(ui_muted "and $(( count - 12 )) more, listed in $log")")
+    (( count > 12 )) && shown+=("$(ui_muted "and $(( count - 12 )) more, listed in ${log##*/}")")
     (( count > 0 )) && ui_box "$count package update(s) available" "${shown[@]}"
 
     if ! ui_confirm "Apply the package updates now?"; then
@@ -137,7 +137,7 @@ rice_update_reboot_check() {
     fi
     dnf needs-restarting --json > "$json" 2>> "$log" || rc=$?
     if command -v jq >/dev/null 2>&1 && jq -e . "$json" >/dev/null 2>&1; then
-        verdict="$(jq -r '[.. | objects | select(has("reboot_required")) | .reboot_required][0] // empty' "$json" 2>/dev/null || true)"
+        verdict="$(jq -r 'first(.. | objects | select(has("reboot_required")) | .reboot_required) | tostring' "$json" 2>/dev/null || true)"
     fi
     if [[ -z "$verdict" ]]; then
         if grep -qs 'Reboot is required' "$json" "$log"; then
@@ -250,7 +250,7 @@ rice_update_firmware() {
 
 _rice_mise_upgrade() {
     cd "$HOME" || return 1
-    mise upgrade
+    mise upgrade || return $?
     mise reshim
 }
 

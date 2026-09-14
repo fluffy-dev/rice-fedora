@@ -76,10 +76,11 @@ rice_cmd_name() {
 
 # Run a command with a time limit. Uses coreutils timeout where it exists and a
 # perl alarm elsewhere, so it also works on the machine this repo is written on.
+# --foreground keeps timeout in the caller's process group, where Ctrl+C reaches it.
 rice_timeout() {
     local seconds="$1"; shift
     if command -v timeout >/dev/null 2>&1; then
-        timeout --kill-after=15 "$seconds" "$@"
+        timeout --foreground --kill-after=15 "$seconds" "$@"
     else
         perl -e 'alarm shift; exec @ARGV or die "exec failed: $!\n"' "$seconds" "$@"
     fi

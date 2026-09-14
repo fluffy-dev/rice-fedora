@@ -64,7 +64,8 @@ rice_flags_main() {
     ONLY=()
     SKIP=()
     LIST_ONLY=""
-    export RICE_DRY_RUN=0
+    if [[ "${RICE_DRY_RUN:-0}" == 1 ]]; then RICE_DRY_RUN=1; else RICE_DRY_RUN=0; fi
+    export RICE_DRY_RUN
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -113,6 +114,11 @@ rice_flags_main() {
     # Start each run with a clean failure log; phases append to it as they go.
     is_dry_run || { mkdir -p "$(dirname "$RICE_FAILURE_LOG")"; : > "$RICE_FAILURE_LOG"; }
 
+    # shellcheck source=cli/core.sh
+    . "$RICE_ROOT/cli/core.sh"
+    # Linked before the phases run, because 99-verify checks for the link.
+    is_dry_run || rice_self_install
+
     RAN=()
     for phase in "${PHASES[@]}"; do
         name="$(_rice_phase_name "$phase")"
@@ -144,9 +150,6 @@ rice_flags_main() {
     fi
 
     if ! is_dry_run; then
-        # shellcheck source=cli/core.sh
-        . "$RICE_ROOT/cli/core.sh"
-        rice_self_install
         cat <<'NEXT'
 
 Next steps:

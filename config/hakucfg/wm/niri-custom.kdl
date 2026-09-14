@@ -155,12 +155,13 @@ layout {
 // Mod+comma and Mod+period), width cycling (Mod+D, Mod+Shift+R), centring
 // (Mod+G, Mod+H), workspaces (Mod+1-9), screenshots (Print, Mod+P) and the
 // media keys. Everything here either adds a bind or deliberately takes one
-// over; the five it takes over are called out where they happen.
+// over; the four it takes over are called out where they happen.
 //
 // The keys a macOS switcher reaches for without thinking are Cmd+C, V, S, A, Z,
 // F, T, W and Q, and Cmd here is Mod. Upstream points two of those at something
 // that destroys work: Mod+C closes the focused window, and Mod+Shift+V wipes the
-// clipboard history. Both are taken over below. The rest are left alone: Mod+A
+// clipboard history. Both are taken over below. Mod+W keeps the dockbar toggle,
+// since a close there would end a whole tabbed window. The rest are left alone: Mod+A
 // and Mod+S move column focus, Mod+F maximises a column, Mod+Z toggles floating
 // and Mod+T raises the cava bar. Those are surprising the first time and undone
 // by pressing the same key again, which is a different class of problem from
@@ -174,13 +175,11 @@ binds {
     Mod+Escape       hotkey-overlay-title="Lock Session" { spawn-sh "$HOME/.local/bin/lock.sh"; }
 
     // --- close --------------------------------------------------------------
-    // Cmd+W and Cmd+Q both end a window on macOS, and neither of them opens a
-    // terminal. Takes over Mod+W (dockbar toggle, rebound below) and Mod+Q
-    // (a second terminal bind, which Mod+Return already covers).
-    Mod+W repeat=false hotkey-overlay-title="Close Window" { close-window; }
+    // Cmd+Q ends the whole app window on macOS. Takes over Mod+Q (a second
+    // terminal bind, which Mod+Return already covers). Mod+W stays upstream's
+    // dockbar toggle: Cmd+W closes one tab on macOS, and a compositor-level
+    // close on that key would throw away every tab in a browser, IDE or kitty.
     Mod+Q repeat=false hotkey-overlay-title="Close Window" { close-window; }
-
-    Mod+Shift+D hotkey-overlay-title="Toggle Dockbar" { spawn-sh "$HOME/.local/bin/dockbar_manager.sh --toggle"; }
 
     // --- clipboard ----------------------------------------------------------
     // Cmd+C is the single most reflexive key on the keyboard and upstream binds

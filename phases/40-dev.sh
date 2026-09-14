@@ -492,12 +492,15 @@ mise_session_path() {
 # Managed by the rice bootstrap (phase 40).
 #
 # Puts the mise shims on PATH for every process the graphical session starts, so
-# that GUI-launched editors and IDEs find go, node, python and the JDK. Without
-# it only interactive shells see them, because that is where mise activates.
+# that GUI-launched editors and IDEs find go, node and the JDK. Without it only
+# interactive shells see them, because that is where mise activates.
+#
+# The shims come after the system directories: hakuspace's GTK tools run a bare
+# python3 and need Fedora's, which has the RPM gi modules a mise Python lacks.
 #
 # Read once, when the systemd user manager starts, so a change to this file
 # takes effect on the next login rather than in the next terminal.
-PATH=${MISE_SHIMS_DIR}:\$PATH
+PATH=\$PATH:${MISE_SHIMS_DIR}
 CONF
     log_info "mise shims exported to the session PATH via $ENVIRONMENT_D_DIR/50-rice-mise.conf"
     log_warn "log out and back in before GUI-launched IDEs see the mise runtimes"

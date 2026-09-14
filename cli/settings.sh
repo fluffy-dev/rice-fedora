@@ -310,7 +310,7 @@ rice_edit_keyboard() {
 rice_edit_suspend() {
     local options=() selected
     options=(
-        "Never sleep on AC   idle stays awake, the lid only locks, the login screen stays on${UI_DELIM}false"
+        "Never sleep on AC   idle stays awake · the lid only locks · the login screen stays on${UI_DELIM}false"
         "Sleep on AC too     the same idle and lid behaviour as on battery${UI_DELIM}true"
     )
     selected="$(_rice_label_for "$(rice_setting SUSPEND_ON_AC)" "${options[@]}")"

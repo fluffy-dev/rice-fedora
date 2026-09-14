@@ -34,6 +34,11 @@ set laststatus=3 noshowmode
 set winborder=rounded
 set foldlevelstart=99 foldtext=
 set shortmess+=Ic
+" Normal-mode commands keep working while the Russian layout is active: each
+" JCUKEN key stands for the QWERTY key in the same position.
+let &langmap = 'ёйцукенгшщзхъфывапролджэячсмитьбю;`qwertyuiop[]asdfghjkl\;''zxcvbnm\,.,'
+      \ . 'ЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ;~QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>'
+set nolangremap
 
 if filereadable(stdpath('data') . '/site/autoload/plug.vim')
   call plug#begin()
