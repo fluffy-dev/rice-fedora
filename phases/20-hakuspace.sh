@@ -326,7 +326,7 @@ install_packages() {
     # bar's visualiser modules and brightnessctl the brightness keys. wlr-randr
     # is called by lock.sh, dpms_handler.sh and wallpaper_set.sh, and wireplumber
     # owns the wpctl the bar and the volume keys drive.
-    pkg_install wl-clipboard cliphist grim slurp brightnessctl playerctl \
+    pkg_install wl-clipboard cliphist grim slurp brightnessctl playerctl rofimoji wtype \
                 pavucontrol cava wlr-randr wireplumber
 
     # pactl and pacat live in pulseaudio-utils, which nothing else pulls in:

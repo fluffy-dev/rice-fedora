@@ -85,14 +85,18 @@ exe_search_path             +~/.local/share/rice/bin
 # combinations is bound by kitty itself. The kitty_mod+alt maps are Ctrl+Shift+Alt
 # chords: the rice:alt_shift_release layout option switches only on a lone Alt+Shift,
 # so the letter cancels the switch and all three modifiers arrive intact.
-map kitty_mod+d         launch --location=vsplit --cwd=current
-map kitty_mod+alt+d     launch --location=hsplit --cwd=current
-map kitty_mod+alt+h     neighboring_window left
-map kitty_mod+alt+j     neighboring_window down
-map kitty_mod+alt+k     neighboring_window up
-map kitty_mod+alt+l     neighboring_window right
-map kitty_mod+alt+z     toggle_layout stack
-map kitty_mod+alt+r     layout_action rotate
+# Letter chords match by their US key only with the ascii fallback. Without it, they
+# silently stop firing while the ru layout is active, which kitty's own defaults avoid.
+# hakuspace maps ctrl+shift+t without it, so it is redeclared here, after its include.
+map --allow-fallback=shifted,ascii ctrl+shift+t new_tab_with_cwd
+map --allow-fallback=shifted,ascii kitty_mod+d         launch --location=vsplit --cwd=current
+map --allow-fallback=shifted,ascii kitty_mod+alt+d     launch --location=hsplit --cwd=current
+map --allow-fallback=shifted,ascii kitty_mod+alt+h     neighboring_window left
+map --allow-fallback=shifted,ascii kitty_mod+alt+j     neighboring_window down
+map --allow-fallback=shifted,ascii kitty_mod+alt+k     neighboring_window up
+map --allow-fallback=shifted,ascii kitty_mod+alt+l     neighboring_window right
+map --allow-fallback=shifted,ascii kitty_mod+alt+z     toggle_layout stack
+map --allow-fallback=shifted,ascii kitty_mod+alt+r     layout_action rotate
 map kitty_mod+alt+1     goto_tab 1
 map kitty_mod+alt+2     goto_tab 2
 map kitty_mod+alt+3     goto_tab 3

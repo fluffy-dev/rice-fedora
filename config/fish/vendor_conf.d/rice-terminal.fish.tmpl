@@ -86,3 +86,13 @@ if status is-interactive
     abbr --add nrt 'npm test'
     abbr --add va 'source .venv/bin/activate.fish'
 end
+
+# hakuspace's config.fish defines Arch and NixOS abbreviations, and one of them turns
+# "nc" into a sudo nix-store clean-up, so netcat cannot be typed. vendor_conf.d runs
+# before config.fish, so they are removed at the first prompt instead, once.
+function __rice_drop_foreign_abbrs --on-event fish_prompt
+    for name in nc nrb nd pacsize pacsizefull
+        abbr --query $name; and abbr --erase $name
+    end
+    functions --erase __rice_drop_foreign_abbrs
+end

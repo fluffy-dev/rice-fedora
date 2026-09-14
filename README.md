@@ -1,19 +1,55 @@
-# rice
+# rice-fedora
 
-Turns a freshly installed Fedora Workstation on a ThinkPad T14 Gen 3 AMD into a finished,
-teal-accented Niri desktop with the full backend toolchain, in one command and with no
-interactive babysitting. It installs Niri and the portal stack, adds the unfiltered Flathub
-remote Fedora's scripted installs never get, drives the
-[hakuspace](https://github.com/hakuimaku/hakuspace) rice installer headlessly at a pinned tag,
-pins the accent and the fractional scale, repairs the upstream defaults that are wrong on this
-hardware (the pinned `DISPLAY`, the VA-API driver, the focus ring, the five-minute idle suspend),
-sets up `us,ru` switched with a lone Alt+Shift, installs Docker, Kubernetes tooling, mise
-runtimes, JetBrains Toolbox, Zen and VS Code, applies the ThinkPad power policy (never sleep on
-AC, Fedora's defaults on battery, an 80% charge ceiling, a swap file), and sets up a hand-written
-Neovim, kitty, fish, tmux and git layer with Claude Code wired through all of it. Every phase is
-idempotent, so re-running the whole thing on a configured machine is close to a no-op, and
-`--dry-run` shows exactly what would change. Afterwards the `rice` command is a menu for updates,
-settings, health checks and maintenance; see [The rice command](#the-rice-command).
+![lint](https://github.com/fluffy-dev/rice-fedora/actions/workflows/lint.yml/badge.svg)
+
+One command that turns a fresh Fedora 44 Workstation into a finished, teal-accented Niri desktop
+and a terminal-first backend development machine. It is built for a ThinkPad T14 Gen 3 AMD
+(Ryzen 7 PRO 6850U, Radeon 680M, 16 GB, 1920x1200) that dual-boots Windows; other hardware works
+after adjusting `config.env`.
+
+Every phase is idempotent, so re-running it on a configured machine changes nothing, and
+`--dry-run` shows exactly what would change. Afterwards the interactive `rice` command handles
+updates, settings, health checks and maintenance.
+
+## What you get
+
+| Area | What is set up |
+|---|---|
+| Desktop | Niri with the [hakuspace](https://github.com/hakuimaku/hakuspace) rice at a pinned tag, installed headlessly; a teal accent; portals and screen sharing; upstream defaults corrected for this hardware (the pinned `DISPLAY`, the VA-API driver, the focus ring, the five-minute idle suspend) |
+| Keyboard | `us,ru` switched with a lone Alt+Shift, with a notification on every switch |
+| Power | On AC it never suspends: idle stays awake, closing the lid only locks, the login screen stays on. On battery, Fedora's defaults. The Fedora power profile daemon, an 80% charge ceiling and a swap file |
+| Development | Docker, Kubernetes tooling, mise runtimes, JetBrains Toolbox, VS Code, Zen, and Flathub for Slack, Zoom and Teams |
+| Terminal and editor | A hand-written Neovim (vim-plug, VimScript, native LSP and completion), kitty, tmux, fish, delta and lazygit, all on one palette |
+| Claude Code | Installed and wired into fish, kitty, tmux and Neovim, with a status line, desktop notifications and a project scaffolder |
+| Maintenance | The `rice` menu: Install, Update, Settings, Health, Maintain |
+
+## Install
+
+1. Prepare Windows and partition carefully: read [Before you install](#before-you-install). It is
+   the only part of this that can cost you data.
+2. Install Fedora 44 Workstation and log into the default GNOME session.
+3. Clone and run:
+
+   ```bash
+   sudo dnf -y install git
+   git clone https://github.com/fluffy-dev/rice-fedora.git ~/rice
+   ~/rice/rice
+   ```
+
+   Open **Install** in the menu, or run `~/rice/bootstrap.sh` for every phase with no questions.
+   `~/rice/bootstrap.sh --dry-run` first is cheap: it changes nothing.
+4. Reboot, choose **Niri** from the gear menu on the login screen, and log in.
+5. From then on, `rice` is on your PATH for updates, settings and health checks.
+
+## Documentation
+
+- [Shortcuts](docs/SHORTCUTS.md): must-have, useful and other ones to know, for every layer
+- [All shortcuts](docs/SHORTCUTS-ALL.md): the complete reference
+- [Design](docs/design/2026-09-13-fedora-niri-rice-design.md): the original design and its rationale
+- The rest of this README is the reference: [The rice command](#the-rice-command),
+  [Phases](#phases), [Customising](#customising), [Keybindings](#keybindings),
+  [Terminal and editor](#terminal-and-editor), [Troubleshooting](#troubleshooting),
+  [Updating hakuspace](#updating-hakuspace), [Known rough edges](#known-rough-edges)
 
 ---
 
@@ -62,7 +98,7 @@ After Fedora is installed and you are logged into the default GNOME session:
 
 ```bash
 sudo dnf -y install git
-git clone https://github.com/<you>/rice ~/rice
+git clone https://github.com/fluffy-dev/rice-fedora.git ~/rice
 ~/rice/rice                 # the menu: open Install and pick the phases
 ~/rice/bootstrap.sh         # or: every phase, no menu, no questions
 ```
@@ -254,7 +290,7 @@ Phases run in filename order. Each is standalone, idempotent, and safe to re-run
 |---|---|
 | `00-system` | dnf tuning (parallel downloads, fastest mirror, `defaultyes`, written inside `[main]`), RPM Fusion free and nonfree, full system upgrade, baseline tools, flatpak plus the unfiltered Flathub remote, firmware update check (reports only, applies nothing, never prompts; exit 2 from `fwupdmgr get-updates` means up to date) |
 | `10-niri` | niri and xwayland-satellite (Fedora's own packages, COPR only as a fallback), gammastep, swayosd plus its libinput backend service, the xdg-desktop-portal set including the GNOME portal (this is what makes screen sharing work), mate-polkit, gnome-keyring. Asserts `/usr/share/wayland-sessions/niri.desktop` exists so GDM offers the session |
-| `20-hakuspace` | The rice package set, with hypridle, hyprlock, hyprpicker, mpvpaper and nwg-look from COPR `lionheartp/Hyprland` restricted by `includepkgs` (a leftover `eli-xciv/hyprland` is removed and its builds upgraded), and a warning when `hypridle -V` is below 0.1.8. hypridle and hyprlock are the session lock, so they are installed before the rest of the COPR set and retried through COPR outages, six attempts over about five minutes (`HYPR_COPR_RETRY_DELAYS`). When either is still missing at the end, the phase stops the bootstrap, since nothing else locks the session on idle, lid close or suspend, and prints a resume command that skips only the phases before it. The phase also drops mise's directories from its own PATH, so the installer and the theme scripts run Fedora's `python3`. The `busctl` stand-in for `powerprofilesctl` in `~/.local/share/rice/bin` while `/usr/bin/powerprofilesctl` is absent. JetBrainsMono Nerd Font, colorthief, clone of hakuspace at `HAKUSPACE_TAG`, a shallow pre-clone of `hakuspace-archive`, then upstream's `install.sh` driven non-interactively with a fixed eight-answer sequence, its output captured to a log and checked block by block. Sets fish as the login shell. Highest-risk phase |
+| `20-hakuspace` | The rice package set, including rofimoji and wtype for the `Mod+Slash` emoji picker, with hypridle, hyprlock, hyprpicker, mpvpaper and nwg-look from COPR `lionheartp/Hyprland` restricted by `includepkgs` (a leftover `eli-xciv/hyprland` is removed and its builds upgraded), and a warning when `hypridle -V` is below 0.1.8. hypridle and hyprlock are the session lock, so they are installed before the rest of the COPR set and retried through COPR outages, six attempts over about five minutes (`HYPR_COPR_RETRY_DELAYS`). When either is still missing at the end, the phase stops the bootstrap, since nothing else locks the session on idle, lid close or suspend, and prints a resume command that skips only the phases before it. The phase also drops mise's directories from its own PATH, so the installer and the theme scripts run Fedora's `python3`. The `busctl` stand-in for `powerprofilesctl` in `~/.local/share/rice/bin` while `/usr/bin/powerprofilesctl` is absent. JetBrainsMono Nerd Font, colorthief, clone of hakuspace at `HAKUSPACE_TAG`, a shallow pre-clone of `hakuspace-archive`, then upstream's `install.sh` driven non-interactively with a fixed eight-answer sequence, its output captured to a log and checked block by block. Sets fish as the login shell. Highest-risk phase |
 | `30-theme` | Owns `~/hakucfg/wm/niri-custom.kdl` and two keys in `setting.sh`. Detects the panel resolution and writes the niri output scale, renders the keyboard layouts and switch options from `KEYBOARD_LAYOUTS` and `LAYOUT_SWITCH` (seeding `~/.config/xkb` for `alt_shift`), installs the `layout-notify` watcher, makes upstream's non-executable theme scripts executable, pins the teal accent with `gen_style.sh` and verifies it reached the generated theme, runs `apply_style.sh` only in a live session, installs the `accent` helper into `~/.local/share/rice/bin`, renders the `rice-` wallpapers |
 | `40-dev` | Docker CE from Docker's repo, Kubernetes tooling (kubectl, helm, k9s, kind, k3d, kubectx, kubens), mise plus `MISE_RUNTIMES` and a session-wide shim PATH, JetBrains Toolbox, Zen, VS Code, modern CLI set, git identity and an ed25519 key. Its fish snippets for mise and Toolbox go to `~/.local/share/fish/vendor_conf.d`, and copies an earlier run left in `~/.config/fish/conf.d` are removed |
 | `50-thinkpad` | Keeps whichever package provides `ppd-service`: tuned-ppd on a fresh Fedora 44, power-profiles-daemon on a system upgraded from Fedora 40 or earlier. Installs tuned-ppd only when neither is there, never installs power-profiles-daemon, and reports TLP as a conflict. The [sleep policy](#sleep-policy) (`hypridle.conf`, the logind lid drop-in, the GDM greeter, the GNOME session keys), the battery charge ceiling unit, the swap file through `swap-swapfile.swap`, the [opt-in trims](#power-swap-and-opt-in-trims), fprintd plus authselect, then report-only diagnostics for suspend mode, PipeWire, Wi-Fi, Bluetooth and amdgpu |
@@ -529,8 +565,10 @@ the next update moves aside whole. fish also reads `~/.local/share/fish/vendor_c
 it survives updates without a re-run. Put your own fish tweaks in a file of your own in that
 directory, or in this repo. Two rules apply there: a file of the same name in `~/.config/fish/conf.d`
 or `functions` replaces the vendor one, and hakuspace's `config.fish` runs after every snippet, so an
-abbreviation sharing a name with one of hakuspace's loses. Phase 40's mise and Toolbox snippets live
-in that vendor directory too, and a copy of either an earlier run left in `~/.config/fish/conf.d` is
+abbreviation sharing a name with one of hakuspace's loses. For the same reason the rice layer erases
+hakuspace's Arch and NixOS abbreviations (`nc`, `nrb`, `nd`, `pacsize`, `pacsizefull`) at the first
+prompt, once `config.fish` has defined them, so `nc` is netcat again. Phase 40's mise and Toolbox
+snippets live in that vendor directory too, and a copy of either an earlier run left in `~/.config/fish/conf.d` is
 removed, because it would replace the vendor one.
 
 The mise snippet runs `mise activate fish` only in an interactive fish. Every other fish, the login
@@ -757,11 +795,13 @@ The same file also adds what upstream has no opinion about:
 
 ## Keybindings
 
+All keys for every layer, from niri to Claude Code, are in [docs/SHORTCUTS.md](docs/SHORTCUTS.md) (Must-have, Useful, Other ones to know) and [docs/SHORTCUTS-ALL.md](docs/SHORTCUTS-ALL.md) (complete).
+
 `Mod` is Super. `Mod+Shift+Slash` opens niri's own hotkey overlay, which is always the
 authoritative list for the machine in front of you. The first four tables are hakuspace's shipped
 `keybinds.kdl`; the last one is ours. Binds marked **overridden** are taken over by
-`config/hakucfg/wm/niri-custom.kdl` and do something else here. There are four of those:
-`Mod+Q`, `Mod+C`, `Mod+Shift+V` and `Mod+Tab`.
+`config/hakucfg/wm/niri-custom.kdl` and do something else here. There are five of those:
+`Mod+Q`, `Mod+C`, `Mod+Shift+V`, `Mod+Tab` and `Mod+Slash`.
 
 Keys inside the terminal (Neovim, tmux, kitty, fish and Claude Code) are in
 [Terminal and editor](#terminal-and-editor). None of them uses Super.
@@ -789,7 +829,7 @@ undone by pressing the same key again.
 | `Mod+N` | Notification centre (`swaync-client -t -sw`) |
 | `Mod+V` | Clipboard menu |
 | `Mod+Shift+V` | Wipe clipboard history. **Overridden**: clipboard menu; the wipe moves to `Mod+Ctrl+Shift+V` |
-| `Mod+Slash` | Emoji picker (rofi emoji mode) |
+| `Mod+Slash` | Emoji picker (rofi emoji mode, which needs a plugin Fedora does not package). **Overridden**: rofimoji emoji picker |
 | `Mod+Y` / `Mod+Shift+Y` | Pick wallpaper / pick video wallpaper |
 | `Mod+L` | Night light toggle (**not** lock; the overlay mislabels it "Adjust Brightness") |
 | `Mod+T` | Cava underbar |
@@ -864,6 +904,7 @@ as that file.
 | `Mod+Tab` | Focus the previous window. Takes over upstream's Haku menu bind |
 | `Mod+Shift+Tab` | Overview (upstream's `Mod+Grave` still works too) |
 | `Mod+Ctrl+Tab` | Haku menu, displaced from `Mod+Tab` |
+| `Mod+Slash` | Emoji picker through `rofimoji`: types the chosen emoji into the focused window with `wtype` and copies it with `wl-copy`. Takes it over from upstream, whose rofi emoji mode needs a plugin Fedora does not package |
 | `Mod+Shift+Space` | Switch to the next keyboard layout with niri's native `switch-layout "next"`, in every `LAYOUT_SWITCH` mode. The toast naming the new layout comes from `layout-notify`, which announces every switch however it happened, so the bind raises none of its own |
 | `Mod+J` / `Mod+K` | Focus window down / up. `Mod+H` and `Mod+L` are taken upstream, so only the vertical half of hjkl is free |
 | `Mod+Shift+J` / `Mod+Shift+K` | Move window down / up in the column |
@@ -1014,8 +1055,10 @@ Abbreviations expand when you press Space or Enter, so what runs is always visib
 ### Keys that behave differently here
 
 The five layers were audited against each other, against kitty 0.47's and tmux 3.7's defaults,
-fish 4's and Neovim 0.12's. No terminal key collides with niri, and no rice kitty key replaces a
-kitty default. These are the deliberate trade-offs that remain:
+fish 4's and Neovim 0.12's. No terminal key collides with niri, and the only rice kitty key on a
+kitty default is `ctrl+shift+t`, redeclared as hakuspace's new tab in the current directory.
+rice's kitty letter maps carry `--allow-fallback=shifted,ascii` like kitty's own defaults, so they
+match by the US key on any layout. These are the deliberate trade-offs that remain:
 
 - **Inside tmux, `C-h` `C-j` `C-k` `C-l` move panes unless the pane runs Neovim or fzf.** A plain
   shell loses fish's `ctrl-l` clear-screen, `ctrl-k` kill-line and `ctrl-j`, and Claude Code loses

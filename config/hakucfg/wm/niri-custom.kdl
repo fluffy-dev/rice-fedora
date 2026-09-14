@@ -207,6 +207,11 @@ binds {
     Mod+Shift+Tab repeat=false hotkey-overlay-title="Overview" { toggle-overview; }
     Mod+Ctrl+Tab  hotkey-overlay-title="Haku Menu" { spawn-sh "$HOME/.local/bin/hakumenu.sh"; }
 
+    // Upstream's rofi emoji mode needs a plugin Fedora does not package. rofimoji
+    // drives rofi as a plain menu, types the emoji into the focused window through
+    // the virtual keyboard protocol niri supports, and copies it as well.
+    Mod+Slash hotkey-overlay-title="Emoji Picker" { spawn "rofimoji" "--selector" "rofi" "--clipboarder" "wl-copy" "--typer" "wtype" "--action" "type" "copy"; }
+
     // --- keyboard layout ----------------------------------------------------
     // A switch that works in every LAYOUT_SWITCH mode, none included. niri's
     // own default config offers this pair on Mod+Space and Mod+Shift+Space;

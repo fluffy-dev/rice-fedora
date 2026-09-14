@@ -80,7 +80,7 @@ rice/
 │       └── wm/
 │           └── niri-custom.kdl   Personal keybinds, output scale, window rules
 └── docs/
-    └── superpowers/specs/    This document
+    └── design/               This document
 ```
 
 ## 6. bootstrap.sh contract
