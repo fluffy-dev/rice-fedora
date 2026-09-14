@@ -161,7 +161,8 @@ check_desktop_tools() {
         "grim|screenshot.sh exits without taking the shot" \
         "playerctl|the media keys bound in keybinds.kdl do nothing" \
         "cava|the waybar cava modules leave holes in the bar" \
-        "brightnessctl|the brightness keys do nothing"
+        "brightnessctl|the brightness keys do nothing" \
+        "nm-applet|no Wi-Fi tray icon in the Niri session"
     do
         cmd="${entry%%|*}"
         why="${entry#*|}"
@@ -262,7 +263,12 @@ check_fonts() {
         v_skip "fonts" "fontconfig is not installed"
         return 0
     fi
-    if fc-list 2>/dev/null | grep -qiF "$FONT_FAMILY"; then
+    # Captured before matching rather than piped into grep -q: grep exits on the
+    # first match, fc-list is killed by SIGPIPE, and under pipefail the pipeline
+    # reports 141, so an installed font would read as missing.
+    local fonts=""
+    fonts="$(fc-list 2>/dev/null || true)"
+    if grep -qiF -- "$FONT_FAMILY" <<<"$fonts"; then
         v_pass "fonts" "$FONT_FAMILY"
     else
         v_fail "fonts" "$FONT_FAMILY not found by fontconfig"

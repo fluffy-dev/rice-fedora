@@ -170,10 +170,15 @@ binds {
     Mod+O { set-column-width "66.667%"; }
 
     // --- capture ------------------------------------------------------------
-    // Cmd+Shift+3/4/5 muscle memory.
+    // Cmd+Shift+3/4 muscle memory. There is deliberately no Mod+Shift+5: it
+    // would run record.sh, which hard-requires wl-screenrec, and Fedora ships
+    // no such package in any release or in a working copr. Upstream's own
+    // Mod+F11 already reaches record.sh for anyone who builds the recorder by
+    // hand, so a second bind would only add another key that answers with a
+    // "Missing dependencies" toast while claiming "Record Screen" in the
+    // hotkey overlay.
     Mod+Shift+3 { screenshot-screen; }
     Mod+Shift+4 { screenshot; }
-    Mod+Shift+5 hotkey-overlay-title="Record Screen" { spawn-sh "$HOME/.local/bin/record.sh"; }
 }
 
 // The shipped rules.kdl blurs, adds noise to and doubles the saturation behind

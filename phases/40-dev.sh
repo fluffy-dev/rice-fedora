@@ -76,11 +76,13 @@ write_user_file() {
 # repo_add never rewrites an existing .repo file, so a version-pinned repository
 # would keep its first release series forever. Drop the file when it no longer
 # mentions the wanted version, letting the caller write it again.
+# Returns 0 when the file was dropped, 1 when it was already current or absent,
+# so the caller can tell a series change from a steady state.
 repo_unpin_stale() {
     local name="$1" marker="$2" file="/etc/yum.repos.d/${1}.repo"
-    [[ -f "$file" ]] || return 0
+    [[ -f "$file" ]] || return 1
     if grep -qF "$marker" "$file" 2>/dev/null; then
-        return 0
+        return 1
     fi
     log_info "$name is pinned to another release series, rewriting it for $marker"
     run sudo rm -f "$file"
@@ -187,11 +189,16 @@ tool_preferring_distro() {
     bin_install "$name" "$version" "$url" "$member"
 }
 
-# Enforce a git setting from config.env, overwriting whatever is there.
+# Enforce a git setting from config.env, overwriting whatever is there. There is
+# no backup of the replaced value, so a replacement is announced rather than made
+# quietly.
 git_set() {
     local key="$1" value="$2" current
     current="$(git config --global --get "$key" 2>/dev/null || true)"
     [[ "$current" == "$value" ]] && { log_skip "git $key already $value"; return 0; }
+    if [[ -n "$current" ]]; then
+        log_warn "git $key was $current, config.env replaces it with $value"
+    fi
     run git config --global "$key" "$value"
 }
 
@@ -382,7 +389,10 @@ setup_k8s() {
             ;;
     esac
 
-    repo_unpin_stale kubernetes "stable:/${K8S_REPO_VERSION}/"
+    local series_changed=false
+    if repo_unpin_stale kubernetes "stable:/${K8S_REPO_VERSION}/"; then
+        series_changed=true
+    fi
     rpm_key_import "https://pkgs.k8s.io/core:/stable:/${K8S_REPO_VERSION}/rpm/repodata/repomd.xml.key"
     repo_add kubernetes <<REPO
 [kubernetes]
@@ -393,7 +403,18 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/${K8S_REPO_VERSION}/rpm/repodata/repomd.xml.key
 REPO
 
-    pkg_install kubectl
+    if [[ "$series_changed" == "true" ]]; then
+        # pkg_install skips anything already installed, which after a series bump
+        # would leave kubectl on the previous one. dnf install pulls the newer
+        # build the rewritten repo now offers.
+        log_info "moving kubectl to the ${K8S_REPO_VERSION} series"
+        run sudo dnf install -y kubectl || {
+            log_warn "could not move kubectl to ${K8S_REPO_VERSION}"
+            rice_record_failure package kubectl
+        }
+    else
+        pkg_install kubectl
+    fi
 
     # Fedora 44 ships Helm 4. Charts and plugins written for Helm 3 mostly carry
     # over, but the plugin API and several defaults did change.
@@ -464,8 +485,9 @@ FISH
 
     local runtime
     for runtime in "${MISE_RUNTIMES[@]}"; do
-        # mise resolves and skips versions it already has, so this converges rather
-        # than re-downloading on every run.
+        # A pinned request is a no-op once its version is installed. A moving one
+        # (@latest, @lts) re-resolves on every run, so a release published since
+        # the last run is fetched and the superseded version is left behind.
         if run mise use --global "$runtime"; then
             log_ok "runtime available: $runtime"
         else
@@ -473,6 +495,14 @@ FISH
             rice_record_failure runtime "$runtime"
         fi
     done
+
+    # Reclaim the versions the moving requests above superseded; mise never
+    # removes them by itself, so each re-run would otherwise leave another whole
+    # toolchain on disk. --yes is what keeps it from asking per version, which
+    # matters because no phase may read stdin.
+    # Deliberately not `mise prune`, which deletes every version no tracked config
+    # references, including toolchains installed by hand for a one-off repro.
+    log_skip "leaving superseded runtime versions in place; run 'mise prune' by hand to reclaim disk"
 }
 
 # --------------------------------------------------------------- jetbrains ---
@@ -500,7 +530,7 @@ jetbrains_existing() {
 }
 
 jetbrains_toolbox() {
-    local bin tmp json url version srcroot
+    local bin tmp json url version srcroot arch_key
 
     if bin="$(jetbrains_existing)"; then
         log_skip "JetBrains Toolbox already installed at $bin"
@@ -527,10 +557,17 @@ jetbrains_toolbox() {
         rice_record_failure download "jetbrains-toolbox"
         return 0
     fi
-    url="$(printf '%s' "$json" | jq -r '.TBA[0].downloads.linux.link // empty')"
-    version="$(printf '%s' "$json" | jq -r '.TBA[0].version // "unknown"')"
+    # The feed lists the two Linux builds under separate keys; "linux" is x86_64.
+    arch_key="linux"
+    [[ "$(uname -m)" == "aarch64" ]] && arch_key="linuxARM64"
+
+    # A malformed feed response has to reach the empty-url branch below rather
+    # than aborting the phase, so jq's status is discarded here.
+    url="$(printf '%s' "$json" | jq -r --arg k "$arch_key" '.TBA[0].downloads[$k].link // empty' 2>/dev/null || true)"
+    version="$(printf '%s' "$json" | jq -r '.TBA[0].version // empty' 2>/dev/null || true)"
+    [[ -n "$version" ]] || version="unknown"
     if [[ -z "$url" ]]; then
-        log_warn "the JetBrains release feed returned no Linux download"
+        log_warn "the JetBrains release feed returned no $arch_key download"
         rice_record_failure download "jetbrains-toolbox"
         return 0
     fi
@@ -605,13 +642,29 @@ StartupWMClass=jetbrains-toolbox
 DESKTOP
 }
 
+# Print the display scale to bake into the IDE options, from config.env when the
+# user pinned one and otherwise from the value phase 30 resolved for the panel and
+# recorded: phases are separate processes, so a file is the only way the computed
+# scale crosses from one to the next. Returns non-zero when neither is usable.
+jetbrains_scale() {
+    # shellcheck disable=SC2153  # RICE_STATE_DIR comes from lib/guard.sh
+    local scale="${DISPLAY_SCALE:-}" stamp="$RICE_DISPLAY_SCALE_STAMP"
+    if [[ -z "$scale" && -r "$stamp" ]]; then
+        scale="$(cat "$stamp" 2>/dev/null || true)"
+    fi
+    [[ "$scale" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+    printf '%s\n' "$scale"
+}
+
 # JetBrains IDEs run under XWayland by default. The JetBrains Runtime ships a
 # native Wayland toolkit that fixes blurry text and scaling on fractional scales,
 # but it is opt-in per IDE, and the per-IDE vmoptions files do not exist until an
 # IDE is installed. So the recommended block is written once, for pasting.
 jetbrains_wayland_defaults() {
-    local scale_line="# -Dide.ui.scale=1.25   # uncomment and match your display scale"
-    [[ -n "${DISPLAY_SCALE:-}" ]] && scale_line="-Dide.ui.scale=${DISPLAY_SCALE}"
+    local scale scale_line="# -Dide.ui.scale=1.25   # uncomment and match your display scale"
+    if scale="$(jetbrains_scale)"; then
+        scale_line="-Dide.ui.scale=${scale}"
+    fi
 
     write_user_file "$HOME/.config/JetBrains/rice-wayland.vmoptions" <<VMOPTIONS
 # Recommended JVM options for JetBrains IDEs on a Wayland session.

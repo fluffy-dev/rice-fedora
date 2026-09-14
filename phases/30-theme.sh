@@ -20,6 +20,14 @@ THEME_STATE_FILE="$HAKU_STATE_DIR/state/state.env"
 NIRI_STYLE="$HAKU_STATE_DIR/theme/niri-style.kdl"
 WALLPAPER_DIR="$HOME/Pictures/Wallpapers"
 
+# What this phase last handed to gen_style.sh. The generated theme itself cannot
+# answer "did rice put this here or did the user?", because the accent helper
+# writes the same state file through the same script.
+THEME_ACCENT_STAMP="$RICE_ACCENT_STAMP"
+
+# Phase 40 runs as its own process and cannot see the scale worked out below.
+DISPLAY_SCALE_STAMP="$RICE_DISPLAY_SCALE_STAMP"
+
 # Upstream's asset archive copies 22 wallpapers into WALLPAPER_DIR, so "is the
 # directory empty" can never identify ours. Every file this phase renders is
 # named with this prefix instead.
@@ -78,6 +86,36 @@ theme_state_accent() {
         . "$THEME_STATE_FILE" || exit 1
         printf '%s\n' "${ACCENT_COLOR:-}"
     )
+}
+
+# Record a single value this phase has resolved, for a later run or a later
+# phase to read back.
+theme_stamp() {
+    local file="$1" value="$2"
+    is_dry_run && return 0
+    mkdir -p "$(dirname "$file")"
+    printf '%s\n' "$value" > "$file"
+}
+
+# True when gen_style.sh has to run for the given accent to be in effect.
+#
+# gen_style.sh rewrites the whole theme state, so running it unconditionally would
+# revert anyone who picked another colour with the accent helper. Deciding that
+# needs both the live colour and the stamp: the stamp says what rice last wrote,
+# so a live colour that no longer matches it was chosen by someone else and is
+# left alone. Comparing against the stamp alone would mean a cleared state
+# directory looks like a fresh machine and silently overwrites that choice.
+theme_accent_needs_apply() {
+    local want="${1,,}" stamped="" live=""
+    [[ -r "$THEME_ACCENT_STAMP" ]] && stamped="$(cat -- "$THEME_ACCENT_STAMP" 2>/dev/null || true)"
+    live="$(theme_state_accent || true)"
+    stamped="${stamped,,}"
+    live="${live,,}"
+
+    [[ -n "$live" ]] || return 0
+    [[ "$live" == "$want" ]] && return 1
+    [[ "$live" == "$stamped" ]] || return 1
+    return 0
 }
 
 # Confirm the generated theme really carries the requested accent.
@@ -251,18 +289,35 @@ else
     log_warn "falling back to scale $SCALE"
 fi
 
+theme_stamp "$DISPLAY_SCALE_STAMP" "$SCALE"
+
 log_step "hakuspace settings"
 
 if [[ ! -d "$HAKUCFG_DIR" ]]; then
     log_warn "$HAKUCFG_DIR does not exist yet; phase 20-hakuspace has not run"
 fi
 
-staged_setting="$(theme_stage "$RICE_ROOT/config/hakucfg/setting.sh" "setting.sh")"
-set_kv ACCENT_COLOR_BASED_ON_WALLPAPER false "$staged_setting"
-set_kv WALL_INTERVAL "$WALLPAPER_INTERVAL" "$staged_setting"
-install_file "$staged_setting" "$HAKUCFG_DIR/setting.sh" 0755
+# setting.sh belongs to the user: upstream writes it once and asks before
+# replacing it, and the Haku menu sends people here to edit it. Only the two
+# keys this rice depends on are asserted, in place, on a file that already
+# exists. The repo's template is a first-install seed, nothing more.
+SETTING_DST="$HAKUCFG_DIR/setting.sh"
+if [[ -f "$SETTING_DST" ]]; then
+    set_kv ACCENT_COLOR_BASED_ON_WALLPAPER false "$SETTING_DST"
+    set_kv WALL_INTERVAL "$WALLPAPER_INTERVAL" "$SETTING_DST"
+else
+    staged_setting="$(theme_stage "$RICE_ROOT/config/hakucfg/setting.sh" "setting.sh")"
+    set_kv ACCENT_COLOR_BASED_ON_WALLPAPER false "$staged_setting"
+    set_kv WALL_INTERVAL "$WALLPAPER_INTERVAL" "$staged_setting"
+    install_file "$staged_setting" "$SETTING_DST" 0755
+fi
 
 log_step "niri overrides"
+
+# Upstream's hypridle sources ~/hakucfg/hypridle.con*, so the override belongs at
+# the hakucfg root. Its own template lands in ~/hakucfg/config/ where that glob
+# cannot see it.
+install_file "$RICE_ROOT/config/hakucfg/hypridle.conf" "$HAKUCFG_DIR/hypridle.conf" 0644
 
 staged_kdl="$(theme_stage "$RICE_ROOT/config/hakucfg/wm/niri-custom.kdl" "niri-custom.kdl")"
 sed -i.bak \
@@ -309,6 +364,14 @@ if ! theme_accent_is_usable "$ACCENT"; then
 elif [[ ! -x "$GEN_STYLE" ]]; then
     log_err "$GEN_STYLE is missing; re-run phase 20-hakuspace"
     rice_record_failure theme "gen_style.sh not installed"
+elif ! theme_accent_needs_apply "$ACCENT"; then
+    current_accent="$(theme_state_accent || true)"
+    if [[ "${current_accent,,}" == "${ACCENT,,}" ]]; then
+        log_skip "accent $ACCENT is already generated"
+    else
+        log_skip "accent left at $current_accent, config.env asks for $ACCENT"
+        log_info "that was chosen after this phase last ran; to go back: accent teal"
+    fi
 else
     if ! run "$GEN_STYLE" --accent "$ACCENT" --font "$FONT_FAMILY" --size "$FONT_SIZE"; then
         log_err "gen_style.sh rejected accent $ACCENT; the previous theme is untouched"
@@ -317,13 +380,16 @@ else
         log_skip "dry-run: no theme was generated, so there is nothing to verify"
     elif ! theme_verify_accent "$ACCENT"; then
         rice_record_failure theme "accent $ACCENT did not reach the generated theme"
-    elif [[ ! -x "$APPLY_STYLE" ]]; then
-        log_warn "$APPLY_STYLE is missing; the generated theme is picked up at next login"
-    elif theme_session_is_live; then
-        run "$APPLY_STYLE"
     else
-        log_skip "not inside a niri session, so there is nothing to reload"
-        log_info "the accent is already written to disk and applies at your first Niri login"
+        theme_stamp "$THEME_ACCENT_STAMP" "$ACCENT"
+        if [[ ! -x "$APPLY_STYLE" ]]; then
+            log_warn "$APPLY_STYLE is missing; the generated theme is picked up at next login"
+        elif theme_session_is_live; then
+            run "$APPLY_STYLE"
+        else
+            log_skip "not inside a niri session, so there is nothing to reload"
+            log_info "the accent is already written to disk and applies at your first Niri login"
+        fi
     fi
 fi
 
@@ -489,14 +555,28 @@ theme_generate_wallpapers() {
     run mkdir -p "$WALLPAPER_DIR"
     log_info "rendering ${#missing[@]} wallpapers at ${WALL_W}x${WALL_H}"
 
-    local name angle effect grain stops stop_list=()
+    # A render is optional work, exactly like a missing ImageMagick above: a
+    # resource limit in policy.xml, a full disk or an OOM kill costs wallpapers,
+    # not the rest of the bootstrap. A killed run leaves a truncated PNG behind,
+    # which would otherwise count as done on the next pass.
+    local name angle effect grain stops out stop_list=() failed=0
     for record in "${missing[@]}"; do
         IFS='|' read -r name angle effect grain stops <<< "$record"
         read -r -a stop_list <<< "$stops"
-        theme_render_wallpaper "$WALLPAPER_DIR/${WALLPAPER_PREFIX}${name}.png" \
-            "$angle" "$effect" "$grain" "${stop_list[@]}"
+        out="$WALLPAPER_DIR/${WALLPAPER_PREFIX}${name}.png"
+        if ! theme_render_wallpaper "$out" "$angle" "$effect" "$grain" "${stop_list[@]}"; then
+            log_warn "could not render $name"
+            rice_record_failure wallpaper "$name"
+            run rm -f -- "$out"
+            failed=$(( failed + 1 ))
+        fi
     done
-    log_ok "wallpapers written to $WALLPAPER_DIR"
+
+    if (( failed == 0 )); then
+        log_ok "wallpapers written to $WALLPAPER_DIR"
+    else
+        log_warn "$failed of ${#missing[@]} wallpapers could not be rendered"
+    fi
 }
 
 log_step "wallpapers"

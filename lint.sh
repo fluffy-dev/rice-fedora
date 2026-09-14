@@ -15,8 +15,16 @@ FILES+=(./config.env)
 
 fail=0
 
+# Parse with the newest bash available. The target runs bash 5, and macOS ships
+# 3.2, whose parser accepts different things.
+BASH_BIN=bash
+for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [[ -x "$candidate" ]] && { BASH_BIN="$candidate"; break; }
+done
+printf 'parsing with %s (%s)\n' "$BASH_BIN" "$("$BASH_BIN" --version | head -1 | sed 's/.*version //;s/ .*//')"
+
 for f in "${FILES[@]}"; do
-    if ! out="$(bash -n "$f" 2>&1)"; then
+    if ! out="$("$BASH_BIN" -n "$f" 2>&1)"; then
         printf 'parse FAIL %s\n%s\n' "$f" "$out"
         fail=1
     fi

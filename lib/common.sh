@@ -14,6 +14,12 @@ RICE_COMMON_LOADED=1
 RICE_FAILURE_LOG="${RICE_FAILURE_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/rice/run-failures.txt}"
 export RICE_FAILURE_LOG
 
+# Values one phase computes and a later phase reads. They are named here rather
+# than in either phase so the two cannot drift apart without lint noticing.
+RICE_DISPLAY_SCALE_STAMP="${XDG_STATE_HOME:-$HOME/.local/state}/rice/display-scale"
+RICE_ACCENT_STAMP="${XDG_STATE_HOME:-$HOME/.local/state}/rice/accent-applied"
+export RICE_DISPLAY_SCALE_STAMP RICE_ACCENT_STAMP
+
 # Record a non-fatal failure so it surfaces in the summary instead of scrolling
 # off the top of a long run.
 rice_record_failure() {

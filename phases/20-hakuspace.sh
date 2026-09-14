@@ -9,9 +9,13 @@
 # so an existing deployment skips the installer rather than re-driving it.
 #
 # install.sh has no set -e and ends in an echo, so its exit status says nothing
-# about whether it worked. Its output is captured instead and searched for the
-# errors it reports, and the artefacts it should have produced are checked
-# afterwards.
+# about whether it worked, and bash never echoes a `read -p` prompt when stdin is
+# a pipe, so the captured log holds none of the questions either. Two things
+# decide instead: the completion line each answered block prints on its way out,
+# and the artefacts on disk. Losing the config or ~/.local/bin block is fatal,
+# because later phases would build on a half-deployed tree. Losing the archive
+# assets is recorded and leaves the completion marker unwritten, so the next run
+# looks again rather than locking the half-install in.
 set -euo pipefail
 RICE_ROOT="${RICE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck source-path=SCRIPTDIR
@@ -23,13 +27,46 @@ RICE_ROOT="${RICE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 export GIT_TERMINAL_PROMPT=0
 
 HAKUSPACE_REPO="https://github.com/hakuimaku/hakuspace.git"
+HAKUSPACE_ARCHIVE_REPO="https://github.com/hakuimaku/hakuspace-archive.git"
 HAKUSPACE_ARCHIVE_DIR="$HOME/hakuspace-archive"
-HAKUSPACE_INSTALL_TIMEOUT=900
+HAKUSPACE_INSTALL_TIMEOUT="${HAKUSPACE_INSTALL_TIMEOUT:-900}"
 HAKUSPACE_MARKER="$RICE_STATE_DIR/hakuspace-installed"
+HAKUSPACE_BACKUP_DIR="$HOME/.backup"
+
+# Cleared by anything that proves the deployment incomplete. The completion
+# marker is only written while it still holds.
+HAKUSPACE_DEPLOY_OK=1
 
 # install.sh looks for yay before it notices the distro is not Arch, so it always
 # reports these on Fedora. They are expected and are not failures.
 HAKUSPACE_BENIGN_ERRORS='Arch-based|yay is not installed|packages manually'
+
+# The line each answered block prints on its way out. A block that was skipped,
+# because its answer landed on another prompt or ran off the end of the file,
+# prints "Skipping ..." instead and none of these.
+HAKUSPACE_DONE_CONFIGS="Configurations deployed finished."
+HAKUSPACE_DONE_BIN="local/bin deployment completed."
+HAKUSPACE_DONE_ARCHIVE="hakuspace-archive setup completed."
+HAKUSPACE_DONE_ARCHIVE_SETUP="Setup completed."
+
+# One representative file from each block the answer sequence has to reach, so a
+# directory that exists but holds nothing useful cannot pass for a deployment.
+HAKUSPACE_ARTEFACTS=(
+    "$HOME/.config/niri/config.kdl"
+    "$HOME/.config/niri/keybinds.kdl"
+    "$HOME/.config/waybar/top/config"
+    "$HOME/.local/bin/gen_style.sh"
+    "$HOME/hakucfg/setting.sh"
+)
+
+# Every path install.sh MOVES aside before it writes its own copy, relative to
+# $HOME. gtk-3.0 is absent on purpose: that one alone is copied, not moved.
+HAKUSPACE_MOVED_PATHS=(
+    .config/Thunar .config/btop .config/cava .config/fastfetch .config/fish
+    .config/kitty .config/mpv .config/niri .config/rofi .config/swaync
+    .config/waybar .config/xdg-desktop-portal .config/xfce4
+    .config/mimeapps.list .config/starship.toml .nanorc .local/bin
+)
 
 # Every directory name under the upstream .config tree. install.sh decides which
 # of them to skip with an unanchored substring match against absolute paths, so
@@ -39,9 +76,13 @@ HAKUSPACE_UNSAFE_PATH_WORDS=(
     rofi swaync waybar xdg-desktop-portal xfce4 config
 )
 
+# Held at the version upstream hakuspace's own Fedora guide documents, so the
+# font this rice installs is the one its themes were drawn against. Newer
+# nerd-fonts releases exist; bump this only alongside upstream.
 NERD_FONT_VERSION="v3.4.0"
 NERD_FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONT_VERSION}/JetBrainsMono.zip"
 FONT_DIR="$HOME/.local/share/fonts/JetBrainsMono"
+FONT_STAMP="$FONT_DIR/.rice-version"
 
 FISH_PATH="/usr/bin/fish"
 
@@ -92,8 +133,18 @@ install_packages() {
     # virtual provide, which rpm -q cannot see.
     pkg_install_required waybar rofi kitty fish SwayNotificationCenter
 
-    # Fedora 44 has no wget package; wget2-wget is what owns /usr/bin/wget.
-    pkg_install fastfetch direnv zoxide eza jq socat curl wget2-wget xdg-user-dirs
+    pkg_install fastfetch direnv zoxide eza jq socat xdg-user-dirs
+
+    # Asked for by binary rather than by name, the way phase 00 does it: an image
+    # shipping curl-minimal cannot install curl without an explicit swap, and
+    # rpm -q curl cannot see curl-minimal, so a bare name would be retried on
+    # every run. Fedora 44 has no wget package either; wget2-wget owns /usr/bin/wget.
+    local net=()
+    command -v curl >/dev/null 2>&1 || net+=(curl)
+    command -v wget >/dev/null 2>&1 || net+=(wget2-wget)
+    if (( ${#net[@]} > 0 )); then
+        pkg_install "${net[@]}"
+    fi
 
     # gen_style.sh and the wallpaper scripts need ImageMagick, python bindings
     # and the GTK layer-shell library that the bar and popups are drawn with.
@@ -108,9 +159,16 @@ install_packages() {
                 pavucontrol cava wlr-randr wireplumber
     pkg_install mpv imv
 
-    # Thunar is capitalised in Fedora and has no lowercase provide. The real
-    # unrar comes from RPM Fusion nonfree, which phase 00 enables; Fedora's own
-    # unrar is only a wrapper around unrar-free.
+    # Upstream's autostart.kdl spawns nm-applet and blueman-applet at every
+    # login, and none of the shipped waybar modes carries a network or bluetooth
+    # module, so the tray applets are the only Wi-Fi and Bluetooth UI there is.
+    pkg_install network-manager-applet blueman
+
+    # rpm -q and pkg_installed match the RPM name, which Fedora capitalises as
+    # Thunar, so that spelling is what has to appear here even though the package
+    # also carries a lowercase provide. The real unrar comes from RPM Fusion
+    # nonfree, which phase 00 enables; Fedora's own unrar is only a wrapper
+    # around unrar-free.
     pkg_install Thunar thunar-archive-plugin thunar-volman file-roller \
                 gvfs gvfs-mtp tumbler ffmpegthumbnailer \
                 7zip unrar unzip zip
@@ -130,10 +188,12 @@ install_packages() {
     # they work here without Hyprland, and accent_color_picker.sh shells out to
     # hyprpicker. This copr also builds cliphist and waybar-git, hence the
     # restriction; the hypr* libraries stay in the list because these builds can
-    # need newer sonames than Fedora ships.
+    # need newer sonames than Fedora ships. xcur2png is in the list because
+    # nwg-look Requires it and Fedora ships it nowhere, so restricting the copr
+    # without it makes nwg-look uninstallable.
     if copr_enable eli-xciv/hyprland; then
         copr_restrict eli-xciv/hyprland \
-            hypridle hyprlock hyprpicker mpvpaper nwg-look \
+            hypridle hyprlock hyprpicker mpvpaper nwg-look xcur2png \
             hyprlang hyprutils hyprgraphics hyprcursor
         pkg_install mpvpaper hypridle hyprlock hyprpicker nwg-look
     else
@@ -159,8 +219,14 @@ install_packages() {
 
 # ------------------------------------------------------------------ font -----
 
+# True only for a complete installation of the pinned release. A stamp rather
+# than a file count, because a partial unzip leaving one .ttf behind would
+# otherwise short-circuit every later run.
 font_present() {
-    [[ -d "$FONT_DIR" ]] && compgen -G "$FONT_DIR/*.ttf" >/dev/null 2>&1
+    [[ -r "$FONT_STAMP" ]] || return 1
+    local have
+    have="$(cat "$FONT_STAMP" 2>/dev/null || true)"
+    [[ "$have" == "$NERD_FONT_VERSION" ]]
 }
 
 # Install JetBrainsMono Nerd Font into the user font directory. Deliberately
@@ -197,15 +263,28 @@ install_nerd_font() {
         return 0
     fi
 
-    mkdir -p "$FONT_DIR"
-    if ! unzip -q -o "$zip" -d "$FONT_DIR"; then
+    # Unpacked beside the destination and swapped in afterwards, so a failed
+    # extraction is never visible as a half-populated font directory.
+    local staging="${FONT_DIR}.rice-new"
+    mkdir -p "$(dirname "$FONT_DIR")"
+    rm -rf "$staging"
+    if ! unzip -q "$zip" -d "$staging"; then
+        rm -rf "$staging"
         log_warn "could not unpack the Nerd Font archive"
         rice_record_failure font "JetBrainsMono Nerd Font ${NERD_FONT_VERSION}"
         return 0
     fi
 
-    fc-cache -f
-    log_ok "installed JetBrainsMono Nerd Font into $FONT_DIR"
+    rm -rf "${FONT_DIR:?}"
+    mv "$staging" "$FONT_DIR"
+
+    if fc-cache -f; then
+        printf '%s\n' "$NERD_FONT_VERSION" > "$FONT_STAMP"
+        log_ok "installed JetBrainsMono Nerd Font into $FONT_DIR"
+    else
+        log_warn "fc-cache failed; log out and back in for the new font to be picked up"
+        rice_record_failure font "fc-cache"
+    fi
 }
 
 # ------------------------------------------------------------ colorthief -----
@@ -266,7 +345,10 @@ resolve_fish() {
 installer_fish() { command -v fish 2>/dev/null || true; }
 
 # Change the login shell ourselves, before the installer runs. Upstream would do
-# it via plain chsh, which prompts through PAM; sudo chsh does not.
+# it via plain chsh, which prompts through PAM; sudo chsh does not. A refusal is
+# recorded rather than fatal: an LDAP passwd entry, an authselect policy or a
+# trimmed image without util-linux-user all fail here for reasons that have
+# nothing to do with the rest of the rice.
 set_login_shell() {
     log_step "login shell"
 
@@ -296,16 +378,31 @@ set_login_shell() {
         return 0
     fi
 
-    run sudo chsh -s "$fish" "$user"
-    log_ok "login shell set to $fish (takes effect at the next login)"
+    # chsh ships in util-linux-user, which a minimal image does not install;
+    # usermod comes from shadow-utils and is always there.
+    local cmd=()
+    if command -v chsh >/dev/null 2>&1; then
+        cmd=(sudo chsh -s "$fish" "$user")
+    else
+        log_info "chsh is not installed, using usermod instead"
+        cmd=(sudo usermod -s "$fish" "$user")
+    fi
+
+    if run "${cmd[@]}"; then
+        log_ok "login shell set to $fish (takes effect at the next login)"
+    else
+        log_warn "could not change the login shell; set it by hand with: chsh -s $fish"
+        rice_record_failure shell "chsh"
+    fi
 }
 
 # ------------------------------------------------------------- hakuspace -----
 
 hakuspace_deployed() {
-    [[ -d "$HOME/.config/niri" ]] &&
-    [[ -f "$HOME/.local/bin/gen_style.sh" ]] &&
-    [[ -f "$HOME/hakucfg/setting.sh" ]]
+    local path
+    for path in "${HAKUSPACE_ARTEFACTS[@]}"; do
+        [[ -e "$path" ]] || return 1
+    done
 }
 
 hakuspace_at_tag() {
@@ -326,7 +423,7 @@ guard_clone_path() {
     local word
     for word in "${HAKUSPACE_UNSAFE_PATH_WORDS[@]}"; do
         if [[ "$HAKUSPACE_DIR" == *"$word"* ]]; then
-            die "HAKUSPACE_DIR ($HAKUSPACE_DIR) contains \"$word\". install.sh matches config names against the whole path, so it would silently skip the $word config. Set HAKUSPACE_DIR to a path without that word, for example \$HOME/hakuspace."
+            die "HAKUSPACE_DIR ($HAKUSPACE_DIR) contains \"$word\". install.sh matches config names against the whole absolute path, so it would silently skip the $word config. Set HAKUSPACE_DIR in $RICE_ROOT/config.local.env to a path that contains no such word anywhere, including inside your home directory, for example /var/tmp/hakuspace."
         fi
     done
 }
@@ -379,6 +476,54 @@ defuse_extra_prompts() {
     install_file "$src" "$dst" 0755
 }
 
+# Fetch hakuspace-archive before the installer does. Upstream clones it at full
+# depth from inside the answer-synchronised section, where it is by far the
+# largest download and the likeliest reason for the timeout to fire; with a
+# shallow checkout already in place install.sh takes its `pull --ff-only` path
+# instead. Best-effort, because the installer can still do it itself.
+preclone_archive() {
+    if [[ -d "$HAKUSPACE_ARCHIVE_DIR/.git" ]]; then
+        log_skip "hakuspace-archive checkout already present"
+        return 0
+    fi
+    if [[ -e "$HAKUSPACE_ARCHIVE_DIR" ]]; then
+        log_warn "$HAKUSPACE_ARCHIVE_DIR is in the way, leaving the clone to install.sh"
+        return 0
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        log_warn "git is missing, leaving the archive clone to install.sh"
+        return 0
+    fi
+
+    log_info "pre-cloning hakuspace-archive (shallow) so the big download stays outside the timeout"
+    if git clone --depth 1 "$HAKUSPACE_ARCHIVE_REPO" "$HAKUSPACE_ARCHIVE_DIR"; then
+        log_ok "cloned hakuspace-archive into $HAKUSPACE_ARCHIVE_DIR"
+    else
+        rm -rf "$HAKUSPACE_ARCHIVE_DIR"
+        log_warn "could not pre-clone hakuspace-archive; install.sh will clone it inside the timeout window"
+    fi
+}
+
+# Name the paths upstream is about to move, so the user can find them again.
+# backup_item moves rather than copies, which is how a re-run of this phase alone
+# ends up with the files phases 30 and 40 own sitting in ~/.backup.
+warn_about_moved_paths() {
+    local rel present=()
+    for rel in "${HAKUSPACE_MOVED_PATHS[@]}"; do
+        if [[ -e "$HOME/$rel" ]]; then
+            present+=("$HOME/$rel")
+        fi
+    done
+
+    (( ${#present[@]} == 0 )) && return 0
+
+    log_warn "upstream's backup MOVES these into $HAKUSPACE_BACKUP_DIR/Backup_<timestamp>/, it does not copy them:"
+    for rel in "${present[@]}"; do
+        log_warn "  $rel"
+    done
+    log_warn "phases 30 and 40 re-assert the parts this rice owns, so let the whole bootstrap finish rather than stopping after this phase"
+}
+
 # The sequence below is valid for a first run on Fedora only. Everything upstream
 # guards behind pacman or NixOS never fires here, which leaves:
 #   2  window manager choice: Niri
@@ -395,6 +540,8 @@ write_answers() {
     printf '2\ny\ny\ny\ny\ny\ny\ny\n' > "$1"
 }
 
+log_has() { grep -aqF "$2" "$1" 2>/dev/null; }
+
 report_installer_errors() {
     local log="$1" errors
     errors="$(grep -aF '[ERROR]' "$log" 2>/dev/null | grep -avE "$HAKUSPACE_BENIGN_ERRORS" || true)"
@@ -407,6 +554,36 @@ report_installer_errors() {
     log_err "install.sh reported errors:"
     printf '%s\n' "$errors" | sed 's/^/      /' >&2
     rice_record_failure hakuspace "install.sh reported errors, see $log"
+    HAKUSPACE_DEPLOY_OK=0
+}
+
+# Decide from the log whether each answer landed on the prompt it was written
+# for. The config and ~/.local/bin blocks are the ones later phases build on, so
+# a missing completion line there is a desynchronised sequence and fatal. The
+# archive block is best-effort by nature (it clones two more repositories), so it
+# is recorded instead, which withholds the marker and re-checks on the next run.
+check_answer_sequence() {
+    local log="$1" missing=() item
+
+    log_has "$log" "$HAKUSPACE_DONE_CONFIGS" || missing+=("block 4, the ~/.config deployment")
+    log_has "$log" "$HAKUSPACE_DONE_BIN" || missing+=("block 5, the ~/.local/bin deployment")
+
+    if (( ${#missing[@]} > 0 )); then
+        for item in "${missing[@]}"; do
+            log_err "install.sh never reported finishing $item"
+        done
+        die "the scripted answers did not land on the prompts they were written for, so the tree is half-deployed. Read $log, look for anything already moved under $HAKUSPACE_BACKUP_DIR/Backup_*, and re-run the installer by hand: cd $HAKUSPACE_DIR && ./install.sh"
+    fi
+    log_ok "install.sh finished the config and ~/.local/bin blocks"
+
+    if log_has "$log" "$HAKUSPACE_DONE_ARCHIVE" && log_has "$log" "$HAKUSPACE_DONE_ARCHIVE_SETUP"; then
+        return 0
+    fi
+
+    log_warn "install.sh did not finish the hakuspace-archive block, so the cursor, icon and wallpaper assets are missing"
+    log_warn "deploy them later with: cd $HAKUSPACE_ARCHIVE_DIR && ./setup.sh"
+    rice_record_failure hakuspace "install.sh did not finish the archive block, see $log"
+    HAKUSPACE_DEPLOY_OK=0
 }
 
 run_installer() {
@@ -420,11 +597,11 @@ run_installer() {
     fi
     if hakuspace_deployed; then
         log_skip "hakuspace already deployed, not running install.sh again"
-        is_dry_run || { mkdir -p "$RICE_STATE_DIR"; date -Iseconds > "$HAKUSPACE_MARKER"; }
         return 0
     fi
 
     if is_dry_run; then
+        log_info "[dry-run] git clone --depth 1 $HAKUSPACE_ARCHIVE_REPO $HAKUSPACE_ARCHIVE_DIR"
         log_info "[dry-run] cd $HAKUSPACE_DIR && SHELL=$(installer_fish) ./install.sh, answering: 2 y y y y y y y"
         return 0
     fi
@@ -444,10 +621,8 @@ run_installer() {
     sudo -v || die "sudo is required to run install.sh"
 
     defuse_extra_prompts
-
-    if [[ -d "$HOME/.config/niri" ]]; then
-        log_warn "upstream's backup MOVES existing configs into ~/.backup, it does not copy them"
-    fi
+    preclone_archive
+    warn_about_moved_paths
 
     [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]] || WORK_DIR="$(mktemp -d)"
     local answers="$WORK_DIR/install-answers"
@@ -474,7 +649,7 @@ run_installer() {
     ) < "$answers" > "$log" 2>&1 || rc=$?
 
     if (( rc == 124 )); then
-        die "install.sh did not finish within ${HAKUSPACE_INSTALL_TIMEOUT}s and was killed, see $log. Run it by hand: cd $HAKUSPACE_DIR && ./install.sh"
+        die "install.sh did not finish within ${HAKUSPACE_INSTALL_TIMEOUT}s and was killed, see $log. Whatever it had already replaced was MOVED to $HAKUSPACE_BACKUP_DIR/Backup_*, so look there for your previous configs. Raise HAKUSPACE_INSTALL_TIMEOUT in $RICE_ROOT/config.local.env on a slow link, or run it by hand: cd $HAKUSPACE_DIR && ./install.sh"
     fi
 
     # install.sh has no set -e and ends in an echo, so a zero status proves
@@ -483,11 +658,53 @@ run_installer() {
     (( rc == 0 )) || log_warn "install.sh exited with status $rc"
 
     report_installer_errors "$log"
+    check_answer_sequence "$log"
     log_info "install.sh log kept at $log"
 }
 
+# True when the wallpaper directory holds something the archive put there. Phase
+# 30 renders its own wallpapers into the same directory, so its rice- prefix has
+# to be excluded or the check answers itself.
+archive_wallpaper_present() {
+    local dir="$HOME/Pictures/Wallpapers" path
+    [[ -d "$dir" ]] || return 1
+    for path in "$dir"/*; do
+        [[ -f "$path" ]] || continue
+        [[ "${path##*/}" == rice-* ]] && continue
+        return 0
+    done
+    return 1
+}
+
+# The archive's assets come from the last four answers of the sequence, and the
+# archive's setup.sh reports success whether or not its reads found anything, so
+# only the assets themselves show that those answers landed. Both probes are
+# local operations on a checkout that is already on disk: the cursor theme is
+# unpacked from a tarball in the repository and the wallpapers are copied out of
+# it, so neither can fail for network reasons alone.
+check_archive_assets() {
+    local missing=() item
+    [[ -d "$HOME/.icons/Bibata-Modern-Ice" ]] || missing+=("the Bibata cursor theme ($HOME/.icons/Bibata-Modern-Ice)")
+    archive_wallpaper_present || missing+=("the archive wallpapers ($HOME/Pictures/Wallpapers)")
+
+    if (( ${#missing[@]} == 0 )); then
+        log_ok "archive assets deployed: Bibata cursors and wallpapers"
+        return 0
+    fi
+
+    log_warn "the archive assets are incomplete:"
+    for item in "${missing[@]}"; do
+        log_warn "  missing $item"
+    done
+    log_warn "deploy them with: cd $HAKUSPACE_ARCHIVE_DIR && ./setup.sh"
+    rice_record_failure hakuspace "archive assets were not deployed"
+    HAKUSPACE_DEPLOY_OK=0
+}
+
 # A desynchronised answer sequence leaves a half-deployed tree that later phases
-# would quietly build on, so this is fatal rather than a recorded failure.
+# would quietly build on, so a missing config or script is fatal. Missing assets
+# only withhold the marker, which is what lets the next run look again instead of
+# skipping the installer forever.
 verify_deployment() {
     log_step "verifying the deployment"
 
@@ -497,12 +714,12 @@ verify_deployment() {
     fi
 
     local missing=() path
-    for path in "$HOME/.config/niri" "$HOME/.local/bin/gen_style.sh" "$HOME/hakucfg/setting.sh"; do
+    for path in "${HAKUSPACE_ARTEFACTS[@]}"; do
         [[ -e "$path" ]] || missing+=("$path")
     done
 
     if (( ${#missing[@]} > 0 )); then
-        die "hakuspace did not deploy: missing ${missing[*]}. Check the install log, run it by hand with cd $HAKUSPACE_DIR && ./install.sh, and delete $HAKUSPACE_MARKER first if it exists."
+        die "hakuspace did not deploy: missing ${missing[*]}. Check the install log, look for your previous configs under $HAKUSPACE_BACKUP_DIR/Backup_*, run the installer by hand with cd $HAKUSPACE_DIR && ./install.sh, and delete $HAKUSPACE_MARKER first if it exists."
     fi
 
     # The upstream scripts ship non-executable; install.sh fixes them up, but only
@@ -512,11 +729,22 @@ verify_deployment() {
         log_ok "made ~/.local/bin scripts executable"
     fi
 
-    # The archive's assets are deployed by the four answers that only a full
-    # sequence reaches, so their absence is how a short sequence shows up.
-    if [[ -d "$HAKUSPACE_ARCHIVE_DIR" ]] && ! compgen -G "$HOME/Pictures/Wallpapers/*" >/dev/null 2>&1; then
-        log_warn "the wallpaper directory is empty although the archive was cloned; the asset answers did not land"
-        rice_record_failure hakuspace "archive assets were not deployed"
+    # Only meaningful on the pass that actually drove the installer. Once the
+    # machine is marked done the wallpaper directory belongs to the user, who may
+    # legitimately have deleted upstream's images in favour of the generated ones.
+    if (( HAKUSPACE_MARKER_PREEXISTING == 0 )); then
+        check_archive_assets
+    else
+        log_skip "archive assets were checked on the run that deployed them"
+    fi
+
+    if (( HAKUSPACE_DEPLOY_OK == 0 )); then
+        if [[ -f "$HAKUSPACE_MARKER" ]]; then
+            log_warn "the deployment looks incomplete; re-run this phase after moving $HAKUSPACE_MARKER aside to deploy again"
+        else
+            log_warn "the deployment is incomplete, so $HAKUSPACE_MARKER stays unwritten and the next run will check it again"
+        fi
+        return 0
     fi
 
     mkdir -p "$RICE_STATE_DIR"
@@ -530,5 +758,9 @@ install_colorthief
 set_login_shell
 guard_clone_path
 clone_hakuspace
+# Captured before run_installer, which creates the marker itself.
+HAKUSPACE_MARKER_PREEXISTING=0
+[[ -f "$HAKUSPACE_MARKER" ]] && HAKUSPACE_MARKER_PREEXISTING=1
+
 run_installer
 verify_deployment

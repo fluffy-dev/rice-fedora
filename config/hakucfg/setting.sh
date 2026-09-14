@@ -2,8 +2,10 @@
 # Hakuspace runtime settings, deployed to ~/hakucfg/setting.sh.
 #
 # Every hakuspace script sources this file for its paths and toggles. It is the
-# upstream v2.3.1 template with this machine's values; phases/30-theme.sh
-# rewrites the accent and wallpaper keys from config.env on top of it.
+# upstream v2.3.1 template with this machine's values, and it is a seed only:
+# phases/30-theme.sh installs it when ~/hakucfg/setting.sh is absent, and
+# thereafter asserts just ACCENT_COLOR_BASED_ON_WALLPAPER and WALL_INTERVAL in
+# the deployed copy. Everything else there stays the user's to edit.
 #
 # shellcheck disable=SC2034  # every value here is read by hakuspace's scripts
 
@@ -45,6 +47,13 @@ AWWW_OPTS="--transition-type random --transition-step 90 --transition-fps 60"
 ACCENT_COLOR_MODE="vivid"
 
 # ====== Screen Recording Settings ======
+# Left at upstream's defaults, and not installed: Fedora packages no
+# wl-screenrec in any release, and record.sh hardcodes that recorder's own
+# flags (--audio-device, --max-fps), so Fedora's wf-recorder cannot stand in
+# without patching an upstream script. Until the binary is built by hand,
+# upstream's Mod+F11 and the waybar recorder button answer with a "Missing
+# dependencies" notification. pactl, the other half of record.sh's dependency
+# check, comes from pulseaudio-utils.
 SCREENREC_SAVE_DIR="$HOME/Videos"
 REC_COMMAND="wl-screenrec"
 REC_OPTS="--max-fps 60"
