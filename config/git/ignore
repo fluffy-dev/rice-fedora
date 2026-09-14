@@ -1,0 +1,8 @@
+# Global git ignore: editor, tool and OS litter that never belongs in a repository.
+*.swp
+*.swo
+Session.vim
+.direnv/
+.DS_Store
+CLAUDE.local.md
+.claude/settings.local.json

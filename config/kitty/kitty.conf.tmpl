@@ -1,0 +1,98 @@
+# kitty settings for the rice terminal stack, rendered from config/palette.env.
+#
+# hakuspace's kitty.conf includes this file on its last line, after its own body
+# and after the theme file gen_style.sh writes, so every value here wins, and a
+# hakuspace update never overwrites it. The font family and size stay with
+# gen_style.sh, which the hakuspace theme menu drives. Remote control and
+# listen_on stay untouched because apply_style.sh reloads every kitty through the
+# /tmp/kitty-<pid> sockets.
+
+# gen_style.sh paints foreground, color7 and color15 in the accent, which is tiring
+# as body text. The accent lives on in color6, the cursor, borders and active tab.
+foreground              @@FG0@@
+background              @@BG0@@
+selection_foreground    none
+selection_background    @@SEL@@
+cursor                  @@ACCENT@@
+cursor_text_color       background
+url_color               @@AQUA@@
+active_border_color     @@ACCENT@@
+inactive_border_color   @@BG3@@
+bell_border_color       @@YELLOW@@
+
+color0  @@ANSI0@@
+color1  @@ANSI1@@
+color2  @@ANSI2@@
+color3  @@ANSI3@@
+color4  @@ANSI4@@
+color5  @@ANSI5@@
+color6  @@ANSI6@@
+color7  @@ANSI7@@
+color8  @@ANSI8@@
+color9  @@ANSI9@@
+color10 @@ANSI10@@
+color11 @@ANSI11@@
+color12 @@ANSI12@@
+color13 @@ANSI13@@
+color14 @@ANSI14@@
+color15 @@ANSI15@@
+
+tab_bar_edge            bottom
+tab_bar_style           powerline
+tab_powerline_style     round
+tab_title_max_length    32
+tab_title_template      "{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.tab}{index}:{title}"
+active_tab_foreground   @@BG0@@
+active_tab_background   @@ACCENT@@
+active_tab_font_style   bold
+inactive_tab_foreground @@FG1@@
+inactive_tab_background @@BG2@@
+inactive_tab_font_style normal
+tab_bar_background      @@BG0@@
+
+# splits drives the split maps below; stack is the zoomed state. The 20pt margin
+# hakuspace uses is kept for a lone window only, since between splits it would
+# waste a sixth of the 1920 px width.
+enabled_layouts             splits,stack
+window_border_width         1px
+draw_minimal_borders        yes
+window_margin_width         0
+single_window_margin_width  20
+window_padding_width        4 8
+inactive_text_alpha         -0.85
+
+# Tuned for the 162 ppi panel at scale 1.0: slightly taller cells for JetBrains
+# Mono, a little extra glyph contrast, and an undercurl thick enough to spot.
+text_composition_strategy   1.0 15
+modify_font                 cell_height 105%
+undercurl_style             thick-sparse
+disable_ligatures           cursor
+
+# Scrollback opens in Neovim, using kitty's documented recipe for nvim 0.12.
+scrollback_pager_history_size 8
+scrollback_pager nvim --cmd 'set eventignore=FileType' +'nnoremap q ZQ' +'call nvim_open_term(0, {})' +'set nomodified nolist' +'$' -
+
+# dnf updates kitty. Closing a window only asks while a command is running in it.
+update_check_interval       0
+confirm_os_window_close     -1
+enable_audio_bell           no
+notify_on_cmd_finish        invisible 15
+strip_trailing_spaces       smart
+exe_search_path             +~/.local/share/rice/bin
+
+# kitty_mod stays ctrl+shift, so copy and paste keep their defaults. None of these
+# combinations is bound by kitty itself.
+map kitty_mod+d         launch --location=vsplit --cwd=current
+map kitty_mod+alt+d     launch --location=hsplit --cwd=current
+map kitty_mod+alt+h     neighboring_window left
+map kitty_mod+alt+j     neighboring_window down
+map kitty_mod+alt+k     neighboring_window up
+map kitty_mod+alt+l     neighboring_window right
+map kitty_mod+alt+z     toggle_layout stack
+map kitty_mod+alt+r     layout_action rotate
+map kitty_mod+alt+1     goto_tab 1
+map kitty_mod+alt+2     goto_tab 2
+map kitty_mod+alt+3     goto_tab 3
+map kitty_mod+alt+4     goto_tab 4
+map kitty_mod+alt+5     goto_tab 5
+map kitty_mod+alt+c     launch --location=vsplit --cwd=current claude

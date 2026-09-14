@@ -1,0 +1,327 @@
+" rice: a calm dark colorscheme drawn from the rice terminal palette.
+"
+" Rendered from config/palette.env at deploy time, so the accent follows ACCENT in
+" config.env. The accent marks focus and nothing else: the cursor line number,
+" the current search match, completion matches, float titles and the mode label.
+" Syntax keeps to muted blues, greens, yellows and neutrals.
+"
+" Normal has no background of its own. The terminal paints the same palette, and
+" leaving it unset lets kitty's background opacity show through.
+
+set background=dark
+highlight clear
+if exists('syntax_on')
+  syntax reset
+endif
+let g:colors_name = 'rice'
+
+let s:accent = '@@ACCENT@@'
+let s:bg0 = '@@BG0@@'
+let s:bg1 = '@@BG1@@'
+let s:bg2 = '@@BG2@@'
+let s:bg3 = '@@BG3@@'
+let s:sel = '@@SEL@@'
+let s:fg0 = '@@FG0@@'
+let s:fg1 = '@@FG1@@'
+let s:fg2 = '@@FG2@@'
+let s:dim = '@@ANSI8@@'
+let s:aqua = '@@AQUA@@'
+let s:blue = '@@BLUE@@'
+let s:green = '@@GREEN@@'
+let s:yellow = '@@YELLOW@@'
+let s:orange = '@@ORANGE@@'
+let s:red = '@@RED@@'
+let s:magenta = '@@MAGENTA@@'
+
+" Blends TINT into BASE by AMOUNT, for tinted backgrounds the palette has no slot for.
+function! s:mix(base, tint, amount) abort
+  let l:base = map([1, 3, 5], {_, i -> str2nr(a:base[i : i + 1], 16)})
+  let l:tint = map([1, 3, 5], {_, i -> str2nr(a:tint[i : i + 1], 16)})
+  let l:rgb = map(l:base, {i, c -> float2nr(round(c + (l:tint[i] - c) * a:amount))})
+  return printf('#%02x%02x%02x', l:rgb[0], l:rgb[1], l:rgb[2])
+endfunction
+
+let s:hl = function('nvim_set_hl', [0])
+
+" ------------------------------------------------------------------- editor --
+call s:hl('Normal', #{fg: s:fg0})
+call s:hl('NormalFloat', #{fg: s:fg0, bg: s:bg1})
+call s:hl('FloatBorder', #{fg: s:dim, bg: s:bg1})
+call s:hl('FloatTitle', #{fg: s:accent, bg: s:bg1, bold: v:true})
+call s:hl('FloatFooter', #{fg: s:fg2, bg: s:bg1})
+call s:hl('Cursor', #{fg: s:bg0, bg: s:fg0})
+call s:hl('CursorLine', #{bg: s:bg1})
+call s:hl('CursorColumn', #{bg: s:bg1})
+call s:hl('ColorColumn', #{bg: s:bg1})
+call s:hl('CursorLineNr', #{fg: s:accent, bold: v:true})
+call s:hl('LineNr', #{fg: s:mix(s:bg3, s:dim, 0.5)})
+call s:hl('SignColumn', {})
+call s:hl('FoldColumn', #{fg: s:bg3})
+call s:hl('Folded', #{fg: s:fg2, bg: s:bg1, italic: v:true})
+call s:hl('NonText', #{fg: s:bg3})
+call s:hl('Whitespace', #{fg: s:bg3})
+call s:hl('SpecialKey', #{fg: s:bg3})
+call s:hl('EndOfBuffer', #{fg: s:bg3})
+call s:hl('Conceal', #{fg: s:fg2})
+call s:hl('Visual', #{bg: s:sel})
+call s:hl('VisualNOS', #{bg: s:sel})
+call s:hl('Search', #{fg: s:yellow, bg: s:mix(s:bg0, s:yellow, 0.18)})
+call s:hl('CurSearch', #{fg: s:bg0, bg: s:accent, bold: v:true})
+call s:hl('IncSearch', #{link: 'CurSearch'})
+call s:hl('Substitute', #{fg: s:bg0, bg: s:orange})
+call s:hl('MatchParen', #{fg: s:accent, bg: s:bg3, bold: v:true})
+call s:hl('WinSeparator', #{fg: s:bg3})
+call s:hl('StatusLine', #{fg: s:fg1, bg: s:bg1})
+call s:hl('StatusLineNC', #{fg: s:fg2, bg: s:bg1})
+call s:hl('StatusLineTerm', #{link: 'StatusLine'})
+call s:hl('StatusLineTermNC', #{link: 'StatusLineNC'})
+call s:hl('TabLine', #{fg: s:fg2, bg: s:bg1})
+call s:hl('TabLineFill', #{bg: s:bg1})
+call s:hl('TabLineSel', #{fg: s:fg0, bg: s:bg2, bold: v:true})
+call s:hl('WinBar', #{fg: s:fg1, bold: v:true})
+call s:hl('WinBarNC', #{fg: s:fg2})
+call s:hl('Title', #{fg: s:blue, bold: v:true})
+call s:hl('Directory', #{fg: s:blue})
+call s:hl('Question', #{fg: s:aqua})
+call s:hl('ModeMsg', #{fg: s:fg1, bold: v:true})
+call s:hl('MoreMsg', #{fg: s:green})
+call s:hl('OkMsg', #{fg: s:green})
+call s:hl('WarningMsg', #{fg: s:yellow})
+call s:hl('ErrorMsg', #{fg: s:red})
+call s:hl('MsgSeparator', #{fg: s:bg3, bg: s:bg1})
+call s:hl('QuickFixLine', #{bg: s:bg2, bold: v:true})
+call s:hl('WildMenu', #{link: 'PmenuSel'})
+call s:hl('SnippetTabstop', #{bg: s:bg2})
+call s:hl('SnippetTabstopActive', #{bg: s:sel})
+call s:hl('SpellBad', #{undercurl: v:true, sp: s:red})
+call s:hl('SpellCap', #{undercurl: v:true, sp: s:yellow})
+call s:hl('SpellLocal', #{undercurl: v:true, sp: s:aqua})
+call s:hl('SpellRare', #{undercurl: v:true, sp: s:magenta})
+
+" --------------------------------------------------------------- completion --
+call s:hl('Pmenu', #{fg: s:fg1, bg: s:bg1})
+call s:hl('PmenuSel', #{fg: s:fg0, bg: s:sel})
+call s:hl('PmenuMatch', #{fg: s:accent, bg: s:bg1, bold: v:true})
+call s:hl('PmenuMatchSel', #{fg: s:accent, bg: s:sel, bold: v:true})
+call s:hl('PmenuKind', #{fg: s:blue, bg: s:bg1})
+call s:hl('PmenuKindSel', #{fg: s:blue, bg: s:sel})
+call s:hl('PmenuExtra', #{fg: s:fg2, bg: s:bg1})
+call s:hl('PmenuExtraSel', #{fg: s:fg2, bg: s:sel})
+call s:hl('PmenuSbar', #{bg: s:bg2})
+call s:hl('PmenuThumb', #{bg: s:bg3})
+call s:hl('PmenuBorder', #{fg: s:dim, bg: s:bg1})
+call s:hl('PreInsert', #{fg: s:fg2})
+call s:hl('ComplHint', #{fg: s:fg2})
+call s:hl('ComplHintMore', #{fg: s:dim})
+
+" -------------------------------------------------------------------- diffs --
+call s:hl('Added', #{fg: s:green})
+call s:hl('Changed', #{fg: s:blue})
+call s:hl('Removed', #{fg: s:red})
+call s:hl('DiffAdd', #{bg: s:mix(s:bg0, s:green, 0.14)})
+call s:hl('DiffChange', #{bg: s:mix(s:bg0, s:blue, 0.12)})
+call s:hl('DiffDelete', #{fg: s:mix(s:bg0, s:red, 0.45), bg: s:mix(s:bg0, s:red, 0.12)})
+call s:hl('DiffText', #{bg: s:mix(s:bg0, s:blue, 0.3)})
+call s:hl('DiffTextAdd', #{bg: s:mix(s:bg0, s:green, 0.3)})
+
+" ------------------------------------------------------------------- syntax --
+call s:hl('Comment', #{fg: s:fg2, italic: v:true})
+call s:hl('Constant', #{fg: s:orange})
+call s:hl('String', #{fg: s:green})
+call s:hl('Character', #{fg: s:green})
+call s:hl('Number', #{fg: s:orange})
+call s:hl('Boolean', #{fg: s:orange})
+call s:hl('Float', #{fg: s:orange})
+call s:hl('Identifier', #{fg: s:fg0})
+call s:hl('Function', #{fg: s:blue})
+call s:hl('Statement', #{fg: s:magenta})
+call s:hl('Conditional', #{fg: s:magenta})
+call s:hl('Repeat', #{fg: s:magenta})
+call s:hl('Label', #{fg: s:magenta})
+call s:hl('Operator', #{fg: s:fg1})
+call s:hl('Keyword', #{fg: s:magenta})
+call s:hl('Exception', #{fg: s:magenta})
+call s:hl('PreProc', #{fg: s:aqua})
+call s:hl('Include', #{fg: s:magenta})
+call s:hl('Define', #{fg: s:aqua})
+call s:hl('Macro', #{fg: s:aqua})
+call s:hl('PreCondit', #{fg: s:aqua})
+call s:hl('Type', #{fg: s:yellow})
+call s:hl('StorageClass', #{fg: s:magenta})
+call s:hl('Structure', #{fg: s:yellow})
+call s:hl('Typedef', #{fg: s:yellow})
+call s:hl('Special', #{fg: s:aqua})
+call s:hl('SpecialChar', #{fg: s:aqua})
+call s:hl('Tag', #{fg: s:blue})
+call s:hl('Delimiter', #{fg: s:fg2})
+call s:hl('SpecialComment', #{fg: s:fg1, italic: v:true})
+call s:hl('Debug', #{fg: s:orange})
+call s:hl('Underlined', #{underline: v:true})
+call s:hl('Ignore', #{fg: s:bg3})
+call s:hl('Error', #{fg: s:red})
+call s:hl('Todo', #{fg: s:yellow, bold: v:true})
+
+" -------------------------------------------------------------- tree-sitter --
+call s:hl('@variable', #{fg: s:fg0})
+call s:hl('@variable.builtin', #{fg: s:fg1, italic: v:true})
+call s:hl('@variable.parameter', #{fg: s:fg1})
+call s:hl('@variable.member', #{fg: s:fg1})
+call s:hl('@property', #{fg: s:fg1})
+call s:hl('@constant', #{fg: s:orange})
+call s:hl('@constant.builtin', #{fg: s:orange})
+call s:hl('@module', #{fg: s:fg1})
+call s:hl('@module.builtin', #{fg: s:fg1, italic: v:true})
+call s:hl('@label', #{fg: s:magenta})
+call s:hl('@string.escape', #{fg: s:aqua})
+call s:hl('@string.regexp', #{fg: s:aqua})
+call s:hl('@string.special.url', #{fg: s:aqua, underline: v:true})
+call s:hl('@type.builtin', #{fg: s:yellow, italic: v:true})
+call s:hl('@attribute', #{fg: s:aqua})
+call s:hl('@function.builtin', #{fg: s:blue, italic: v:true})
+call s:hl('@constructor', #{fg: s:yellow})
+call s:hl('@punctuation.delimiter', #{fg: s:fg2})
+call s:hl('@punctuation.bracket', #{fg: s:fg2})
+call s:hl('@punctuation.special', #{fg: s:aqua})
+call s:hl('@comment.todo', #{fg: s:yellow, bold: v:true})
+call s:hl('@comment.note', #{fg: s:blue, bold: v:true})
+call s:hl('@comment.warning', #{fg: s:orange, bold: v:true})
+call s:hl('@comment.error', #{fg: s:red, bold: v:true})
+call s:hl('@tag', #{fg: s:blue})
+call s:hl('@tag.attribute', #{fg: s:fg1})
+call s:hl('@tag.delimiter', #{fg: s:fg2})
+call s:hl('@markup.heading', #{fg: s:blue, bold: v:true})
+call s:hl('@markup.strong', #{bold: v:true})
+call s:hl('@markup.italic', #{italic: v:true})
+call s:hl('@markup.strikethrough', #{strikethrough: v:true})
+call s:hl('@markup.underline', #{underline: v:true})
+call s:hl('@markup.link', #{fg: s:blue})
+call s:hl('@markup.link.url', #{fg: s:aqua, underline: v:true})
+call s:hl('@markup.raw', #{fg: s:green})
+call s:hl('@markup.list', #{fg: s:magenta})
+call s:hl('@markup.quote', #{fg: s:fg2, italic: v:true})
+call s:hl('@diff.plus', #{link: 'Added'})
+call s:hl('@diff.minus', #{link: 'Removed'})
+call s:hl('@diff.delta', #{link: 'Changed'})
+
+" ---------------------------------------------------------------------- lsp --
+" Plain variables are left to tree-sitter, which tells constants apart from them.
+call s:hl('@lsp.type.variable', {})
+call s:hl('@lsp.type.selfParameter', #{link: '@variable.builtin'})
+call s:hl('@lsp.type.clsParameter', #{link: '@variable.builtin'})
+call s:hl('@lsp.type.builtinConstant', #{link: '@constant.builtin'})
+call s:hl('@lsp.type.magicFunction', #{link: '@function.builtin'})
+call s:hl('@lsp.type.decorator', #{link: '@attribute'})
+call s:hl('@lsp.type.interface', #{link: '@type'})
+call s:hl('@lsp.type.typeParameter', #{link: '@type'})
+call s:hl('@lsp.typemod.function.defaultLibrary', #{link: '@function.builtin'})
+call s:hl('@lsp.typemod.class.defaultLibrary', #{link: '@type.builtin'})
+call s:hl('@lsp.mod.deprecated', #{strikethrough: v:true})
+call s:hl('LspReferenceText', #{bg: s:bg2})
+call s:hl('LspReferenceRead', #{bg: s:bg2})
+call s:hl('LspReferenceWrite', #{bg: s:bg2, underline: v:true, sp: s:fg2})
+call s:hl('LspReferenceTarget', #{link: 'LspReferenceText'})
+call s:hl('LspInlayHint', #{fg: s:dim, italic: v:true})
+call s:hl('LspCodeLens', #{fg: s:fg2, italic: v:true})
+call s:hl('LspCodeLensSeparator', #{fg: s:bg3})
+call s:hl('LspSignatureActiveParameter', #{fg: s:accent, bold: v:true, underline: v:true})
+
+" -------------------------------------------------------------- diagnostics --
+for [s:severity, s:color, s:line] in [
+      \ ['Error', s:red, 'undercurl'],
+      \ ['Warn', s:yellow, 'undercurl'],
+      \ ['Info', s:blue, 'underdotted'],
+      \ ['Hint', s:fg2, 'underdotted'],
+      \ ['Ok', s:green, 'underline'],
+      \ ]
+  call s:hl('Diagnostic' . s:severity, #{fg: s:color})
+  call s:hl('DiagnosticSign' . s:severity, #{fg: s:color, bold: v:true})
+  call s:hl('DiagnosticVirtualText' . s:severity, #{fg: s:color, bg: s:mix(s:bg0, s:color, 0.1)})
+  call s:hl('DiagnosticUnderline' . s:severity, {s:line: v:true, 'sp': s:color})
+  call s:hl('RiceStl' . s:severity, #{fg: s:color, bg: s:bg1})
+endfor
+unlet s:severity s:color s:line
+call s:hl('DiagnosticUnnecessary', #{fg: s:fg2})
+call s:hl('DiagnosticDeprecated', #{strikethrough: v:true, sp: s:fg2})
+
+" --------------------------------------------------------------- statusline --
+call s:hl('RiceStlNormal', #{fg: s:accent, bg: s:bg1, bold: v:true})
+call s:hl('RiceStlInsert', #{fg: s:green, bg: s:bg1, bold: v:true})
+call s:hl('RiceStlVisual', #{fg: s:magenta, bg: s:bg1, bold: v:true})
+call s:hl('RiceStlReplace', #{fg: s:red, bg: s:bg1, bold: v:true})
+call s:hl('RiceStlCommand', #{fg: s:yellow, bg: s:bg1, bold: v:true})
+call s:hl('RiceStlTerminal', #{fg: s:aqua, bg: s:bg1, bold: v:true})
+call s:hl('RiceStlFile', #{fg: s:fg0, bg: s:bg1})
+call s:hl('RiceStlMuted', #{fg: s:fg2, bg: s:bg1})
+call s:hl('RiceStlAdded', #{fg: s:green, bg: s:bg1})
+call s:hl('RiceStlChanged', #{fg: s:blue, bg: s:bg1})
+call s:hl('RiceStlRemoved', #{fg: s:red, bg: s:bg1})
+
+" ---------------------------------------------------------------------- git --
+call s:hl('GitGutterAdd', #{fg: s:green})
+call s:hl('GitGutterChange', #{fg: s:blue})
+call s:hl('GitGutterDelete', #{fg: s:red})
+call s:hl('GitGutterChangeDelete', #{fg: s:orange})
+call s:hl('GitGutterAddIntraLine', #{bg: s:mix(s:bg0, s:green, 0.3)})
+call s:hl('GitGutterDeleteIntraLine', #{bg: s:mix(s:bg0, s:red, 0.3)})
+call s:hl('diffAdded', #{link: 'Added'})
+call s:hl('diffRemoved', #{link: 'Removed'})
+call s:hl('diffChanged', #{link: 'Changed'})
+call s:hl('diffFile', #{fg: s:yellow, bold: v:true})
+call s:hl('diffOldFile', #{fg: s:yellow})
+call s:hl('diffNewFile', #{fg: s:yellow})
+call s:hl('diffIndexLine', #{fg: s:fg2})
+call s:hl('diffLine', #{fg: s:blue})
+call s:hl('diffSubname', #{fg: s:fg2})
+call s:hl('fugitiveHeader', #{fg: s:fg2})
+call s:hl('fugitiveHeading', #{fg: s:blue, bold: v:true})
+call s:hl('fugitiveStagedHeading', #{fg: s:green, bold: v:true})
+call s:hl('fugitiveUnstagedHeading', #{fg: s:orange, bold: v:true})
+call s:hl('fugitiveUntrackedHeading', #{fg: s:fg1, bold: v:true})
+call s:hl('fugitiveStagedModifier', #{fg: s:green})
+call s:hl('fugitiveUnstagedModifier', #{fg: s:orange})
+call s:hl('fugitiveUntrackedModifier', #{fg: s:fg2})
+call s:hl('fugitiveHash', #{fg: s:yellow})
+call s:hl('fugitiveSymbolicRef', #{fg: s:blue})
+call s:hl('fugitiveCount', #{fg: s:fg2})
+call s:hl('gitcommitSummary', #{fg: s:fg0, bold: v:true})
+call s:hl('gitcommitOverflow', #{fg: s:red})
+call s:hl('gitcommitBranch', #{fg: s:blue})
+call s:hl('gitcommitSelectedFile', #{fg: s:green})
+call s:hl('gitcommitDiscardedFile', #{fg: s:orange})
+call s:hl('gitcommitUntrackedFile', #{fg: s:fg2})
+
+" ------------------------------------------------------- dadbod-ui and netrw --
+call s:hl('dbui_tables', #{fg: s:fg1})
+call s:hl('dbui_buffers', #{fg: s:aqua})
+call s:hl('dbui_saved_query', #{fg: s:green})
+call s:hl('dbui_new_query', #{fg: s:blue})
+call s:hl('dbui_add_connection', #{fg: s:blue})
+call s:hl('dbui_connection_source', #{fg: s:fg2})
+call s:hl('dbui_help', #{fg: s:fg2})
+call s:hl('dbui_help_key', #{fg: s:blue})
+call s:hl('netrwDir', #{fg: s:blue})
+call s:hl('netrwClassify', #{fg: s:fg2})
+call s:hl('netrwLink', #{fg: s:aqua})
+call s:hl('netrwSymLink', #{fg: s:aqua})
+call s:hl('netrwExe', #{fg: s:green})
+call s:hl('netrwTreeBar', #{fg: s:bg3})
+call s:hl('netrwMarkFile', #{bg: s:sel, bold: v:true})
+call s:hl('netrwComment', #{fg: s:fg2})
+
+" ----------------------------------------------------------------- terminal --
+let g:terminal_color_0 = '@@ANSI0@@'
+let g:terminal_color_1 = '@@ANSI1@@'
+let g:terminal_color_2 = '@@ANSI2@@'
+let g:terminal_color_3 = '@@ANSI3@@'
+let g:terminal_color_4 = '@@ANSI4@@'
+let g:terminal_color_5 = '@@ANSI5@@'
+let g:terminal_color_6 = '@@ANSI6@@'
+let g:terminal_color_7 = '@@ANSI7@@'
+let g:terminal_color_8 = '@@ANSI8@@'
+let g:terminal_color_9 = '@@ANSI9@@'
+let g:terminal_color_10 = '@@ANSI10@@'
+let g:terminal_color_11 = '@@ANSI11@@'
+let g:terminal_color_12 = '@@ANSI12@@'
+let g:terminal_color_13 = '@@ANSI13@@'
+let g:terminal_color_14 = '@@ANSI14@@'
+let g:terminal_color_15 = '@@ANSI15@@'

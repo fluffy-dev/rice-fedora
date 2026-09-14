@@ -1,0 +1,36 @@
+# delta as git's pager, styled from the rice palette.
+#
+# Syntax colours come from the terminal's own 16 colours (syntax-theme ansi), which
+# kitty takes from the same palette. Hex values are quoted because an unquoted #
+# starts a comment in git config. Git skips this include while the file is absent,
+# which is how the rice phase keeps core.pager from naming a delta that is not
+# installed.
+
+[core]
+	pager = delta
+
+[interactive]
+	diffFilter = delta --color-only
+
+[delta]
+	navigate = true
+	syntax-theme = ansi
+	line-numbers = true
+	file-style = bold "@@ACCENT@@"
+	file-decoration-style = "@@BG3@@" ul
+	hunk-header-style = file line-number syntax
+	hunk-header-decoration-style = "@@BG3@@" box
+	hunk-header-file-style = "@@BLUE@@"
+	hunk-header-line-number-style = "@@FG2@@"
+	minus-style = "@@RED@@"
+	minus-emph-style = "@@BG0@@" "@@RED@@"
+	plus-style = "@@GREEN@@"
+	plus-emph-style = "@@BG0@@" "@@GREEN@@"
+	zero-style = syntax
+	line-numbers-minus-style = "@@RED@@"
+	line-numbers-plus-style = "@@GREEN@@"
+	line-numbers-zero-style = "@@FG2@@"
+	line-numbers-left-style = "@@BG3@@"
+	line-numbers-right-style = "@@BG3@@"
+	blame-palette = "@@BG0@@ @@BG1@@ @@BG2@@"
+	map-styles = "bold purple => @@MAGENTA@@ @@BG1@@, bold cyan => @@AQUA@@ @@BG1@@"

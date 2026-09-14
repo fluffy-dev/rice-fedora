@@ -1,0 +1,40 @@
+# lazygit themed from the rice palette, with delta rendering diffs.
+gui:
+  nerdFontsVersion: "3"
+  showFileIcons: true
+  border: rounded
+  showRandomTip: false
+  theme:
+    activeBorderColor:
+      - "@@ACCENT@@"
+      - bold
+    inactiveBorderColor:
+      - "@@BG3@@"
+    searchingActiveBorderColor:
+      - "@@YELLOW@@"
+      - bold
+    optionsTextColor:
+      - "@@BLUE@@"
+    selectedLineBgColor:
+      - "@@SEL@@"
+    inactiveViewSelectedLineBgColor:
+      - bold
+    cherryPickedCommitFgColor:
+      - "@@BG0@@"
+    cherryPickedCommitBgColor:
+      - "@@AQUA@@"
+    markedBaseCommitFgColor:
+      - "@@BG0@@"
+    markedBaseCommitBgColor:
+      - "@@YELLOW@@"
+    unstagedChangesColor:
+      - "@@RED@@"
+    defaultFgColor:
+      - "@@FG0@@"
+git:
+  paging:
+    colorArg: always
+    pager: delta --paging=never
+os:
+  # Opens files in the Neovim lazygit was started from, or a new one otherwise.
+  editPreset: nvim-remote

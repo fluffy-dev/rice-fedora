@@ -1,0 +1,93 @@
+# Rice terminal layer for fish: editor and pagers, fzf in the palette, and
+# abbreviations for containers, Kubernetes, git, Node, Python and Claude Code.
+#
+# Installed in ~/.local/share/fish/vendor_conf.d because a hakuspace update moves
+# ~/.config/fish aside and restores only its own files. Fish reads this before
+# hakuspace's config.fish, which would silently replace any abbreviation sharing a
+# name with one of its own, so none of the names here do. None shadows a command
+# Fedora ships either.
+
+fish_add_path --global --path --move ~/.local/share/rice/bin
+
+if command -q nvim
+    set -gx EDITOR nvim
+    set -gx VISUAL nvim
+    set -gx MANPAGER 'nvim +Man!'
+end
+
+if status is-interactive
+    if command -q fd
+        set -gx FZF_DEFAULT_COMMAND 'fd --type f --hidden --follow --exclude .git'
+        # $dir stays literal: fzf's widget sets it to the token under the cursor.
+        set -gx FZF_CTRL_T_COMMAND 'fd --type f --hidden --follow --exclude .git . $dir'
+        set -gx FZF_ALT_C_COMMAND 'fd --type d --hidden --follow --exclude .git . $dir'
+    end
+    set -gx FZF_DEFAULT_OPTS '--height=40% --layout=reverse --border=rounded --info=inline-right --color=fg:@@FG1@@,bg:-1,hl:@@ACCENT@@,fg+:@@FG0@@,bg+:@@SEL@@,hl+:@@ACCENT@@,gutter:-1,query:@@FG0@@,info:@@FG2@@,prompt:@@ACCENT@@,pointer:@@ACCENT@@,marker:@@GREEN@@,spinner:@@AQUA@@,header:@@BLUE@@,border:@@BG3@@,label:@@FG2@@,separator:@@BG3@@,scrollbar:@@BG3@@'
+    set -gx FZF_CTRL_T_OPTS "--preview 'bat --color=always --style=numbers --line-range=:300 {}'"
+    set -gx FZF_ALT_C_OPTS "--preview 'eza --tree --level=2 --color=always {}'"
+
+    # Fedora ships the bindings as a file, which spares a fzf process per shell.
+    if test -r /usr/share/fzf/shell/key-bindings.fish
+        source /usr/share/fzf/shell/key-bindings.fish
+    else if command -q fzf
+        fzf --fish | source
+    end
+
+    abbr --add v nvim
+    abbr --add t 'tmux new-session -A -s main'
+
+    abbr --add cl claude
+    abbr --add clco 'claude --continue'
+    abbr --add clre 'claude --resume'
+
+    abbr --add dk docker
+    abbr --add dps 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"'
+    abbr --add dpsa 'docker ps -a'
+    abbr --add dimg 'docker images'
+    abbr --add dlog 'docker logs -f --tail 200'
+    abbr --add dex 'docker exec -it'
+    abbr --add drun 'docker run --rm -it'
+    abbr --add dprune 'docker system prune'
+
+    abbr --add dcu 'docker compose up -d'
+    abbr --add dcd 'docker compose down'
+    abbr --add dcl 'docker compose logs -f --tail 200'
+    abbr --add dcps 'docker compose ps'
+    abbr --add dce 'docker compose exec'
+    abbr --add dcr 'docker compose run --rm'
+    abbr --add dcrs 'docker compose restart'
+    abbr --add dcp 'docker compose pull'
+
+    abbr --add k kubectl
+    abbr --add kg 'kubectl get'
+    abbr --add kgp 'kubectl get pods'
+    abbr --add kgs 'kubectl get svc'
+    abbr --add kgd 'kubectl get deploy'
+    abbr --add kd 'kubectl describe'
+    abbr --add kl 'kubectl logs -f'
+    abbr --add kex 'kubectl exec -it'
+    abbr --add ka 'kubectl apply -f'
+    abbr --add kdel 'kubectl delete'
+    abbr --add kpf 'kubectl port-forward'
+    abbr --add krr 'kubectl rollout restart'
+    abbr --add kctx kubectx
+    abbr --add kns kubens
+    abbr --add k9a 'k9s --all-namespaces'
+    abbr --add k9r 'k9s --readonly'
+    abbr --add kindc 'kind create cluster'
+    abbr --add kindd 'kind delete cluster'
+    abbr --add kindl 'kind get clusters'
+
+    abbr --add gcm 'git commit -m'
+    abbr --add gds 'git diff --staged'
+    abbr --add gpf 'git push --force-with-lease'
+    abbr --add grb 'git rebase'
+    abbr --add gfu 'git commit --fixup'
+    abbr --add glo 'git lg'
+
+    abbr --add ni 'npm install'
+    abbr --add nr 'npm run'
+    abbr --add nrd 'npm run dev'
+    abbr --add nrt 'npm test'
+    abbr --add va 'source .venv/bin/activate.fish'
+end

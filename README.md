@@ -7,8 +7,9 @@ remote Fedora's scripted installs never get, drives the
 [hakuspace](https://github.com/hakuimaku/hakuspace) rice installer headlessly at a pinned tag,
 pins the accent and the fractional scale, repairs the upstream defaults that are wrong on this
 hardware (the pinned `DISPLAY`, the VA-API driver, the focus ring, the five-minute idle suspend),
-installs Docker, Kubernetes tooling, mise runtimes, JetBrains Toolbox, Zen and VS Code, and
-applies the ThinkPad-specific power and battery settings. Every phase is idempotent, so
+installs Docker, Kubernetes tooling, mise runtimes, JetBrains Toolbox, Zen and VS Code,
+applies the ThinkPad-specific power and battery settings, and sets up a hand-written Neovim,
+kitty, fish, tmux and git layer with Claude Code wired through all of it. Every phase is idempotent, so
 re-running the whole thing on a configured machine is close to a no-op, and `--dry-run` shows
 exactly what would change.
 
@@ -85,7 +86,7 @@ Press `Mod+Shift+Slash` for the built-in hotkey overlay.
 | `--list` | Prints every phase as `[done]` or `[pending]` and exits before the guards, so it works anywhere, including off this laptop |
 
 `NAME` is a phase file name without `.sh`: `00-system`, `10-niri`, `20-hakuspace`, `30-theme`,
-`40-dev`, `50-thinkpad`, `99-verify`. Both flags validate the name against the phases actually on
+`40-dev`, `50-thinkpad`, `60-neovim`, `61-terminal`, `62-claude`, `99-verify`. Both flags validate the name against the phases actually on
 disk and abort naming the valid ones, so a typo cannot turn the run into a silent no-op that
 exits 0.
 
@@ -120,7 +121,10 @@ Phases run in filename order. Each is standalone, idempotent, and safe to re-run
 | `30-theme` | Owns `~/hakucfg`: `setting.sh`, `hypridle.conf` and `wm/niri-custom.kdl`. Detects the panel resolution and writes the niri output scale, makes upstream's non-executable theme scripts executable, pins the teal accent with `gen_style.sh` and verifies it reached the generated theme, runs `apply_style.sh` only in a live session, installs the `accent` helper, renders the `rice-` wallpapers |
 | `40-dev` | Docker CE from Docker's repo, Kubernetes tooling (kubectl, helm, k9s, kind, k3d, kubectx, kubens), mise plus `MISE_RUNTIMES` and a session-wide shim PATH, JetBrains Toolbox, Zen, VS Code, modern CLI set, git identity and an ed25519 key |
 | `50-thinkpad` | Keeps power-profiles-daemon (never TLP), battery charge ceiling unit, fprintd plus authselect, then report-only diagnostics for suspend mode, PipeWire, Wi-Fi, Bluetooth and amdgpu |
-| `99-verify` | Re-runnable health check: session entry, deployed rice, accent, xwayland-satellite and the unpinned `DISPLAY`, VA-API driver, desktop tools, portals, Docker, kubectl, login shell, battery ceiling, fonts. Mutates nothing, prints pass/fail/skip per item, exits non-zero only if something essential is broken |
+| `60-neovim` | Neovim 0.12 from Fedora, plus ruff, fzf, tree-sitter-cli, gcc, uv, and psql with `ENABLE_DB_TOOLS`. basedpyright, TypeScript 7, typescript-language-server, biome and hurl through mise at pinned majors. The hand-written VimScript config seeded into `~/.config/nvim`, vim-plug 0.14.0 checked against its sha256, plugins and tree-sitter parsers installed headless and judged by what they left behind (both tools exit 0 on failure), then a start-up check for errors. Gated on `ENABLE_NEOVIM` |
+| `61-terminal` | kitty settings into `~/hakucfg/config/kitty.conf`, the fish snippet and functions into `~/.local/share/fish`, tmux with `ENABLE_TMUX`, git aliases and delta, lazygit and bat, all coloured from `config/palette.env`, and `~/.local/share/rice/bin` on every PATH. Each deployed file is then loaded by its own tool, and a rejection is recorded rather than fatal |
+| `62-claude` | Claude Code from Anthropic's signed dnf repository, the key's fingerprint checked before import. `~/.claude/settings.json` with attribution off and a read-only allowlist, a palette status line, `notify-send` hooks and `claude-scaffold`. Gated on `ENABLE_CLAUDE_CODE`. The Neovim side ships with phase 60's config |
+| `99-verify` | Re-runnable health check: session entry, deployed rice, accent, xwayland-satellite and the unpinned `DISPLAY`, VA-API driver, desktop tools, portals, Docker, kubectl, login shell, battery ceiling, fonts, then Neovim with its plugins, parsers and language servers, the kitty, fish, tmux and git layers, and Claude Code. Mutates nothing, prints pass/fail/skip per item, exits non-zero only if something essential is broken, which in the terminal group means only a missing `nvim` |
 
 State lives in `~/.local/state/rice/`:
 
@@ -132,6 +136,8 @@ State lives in `~/.local/state/rice/`:
 | `hakuspace-install-<timestamp>.log` | The full captured output of each installer run |
 | `accent-applied` | The accent phase 30 last generated, so a colour you picked afterwards with `accent` is not silently overwritten on the next run |
 | `display-scale` | The scale phase 30 worked out for the panel, which phase 40 reads back for the JetBrains notes file because phases are separate processes |
+| `seeded/` | A checksum of every file phases 60 to 62 last wrote, which is how a file you edited is told apart from one that is still the repo's |
+| `pending/` | The repo's newer version of each file you edited, at its path relative to `$HOME`. See [Customising safely](#customising-safely) |
 
 If a phase fails the run stops there and prints the resume command for it. Everything before it
 is already done, and re-running it anyway is harmless.
@@ -196,7 +202,8 @@ Every one of these bit at least once.
 Every knob is in `config.env`: the accent and its two alternates, font family and size, the
 display scale override, the wallpaper interval and the wallpaper toggle, `HAKUSPACE_TAG` and
 `HAKUSPACE_DIR`, the battery limit, the git identity, `MISE_RUNTIMES`, and the `ENABLE_*` toggles
-for Docker, Kubernetes, mise, JetBrains, Zen, VS Code and Flatpak.
+for Docker, Kubernetes, mise, JetBrains, Zen, VS Code, Flatpak, Neovim, tmux, Claude Code and the
+database tools.
 
 Do not edit it for machine-specific values. Copy it instead:
 
@@ -231,9 +238,18 @@ Knobs worth knowing before you change them:
 - **`BATTERY_CHARGE_LIMIT`** accepts 40 to 100. Setting it back to `100` does not just stop
   applying a ceiling, it tears down the unit and the helper an earlier run installed and writes
   100 back to the embedded controller.
+- **`ENABLE_NEOVIM`** runs phase 60. Its language servers come from mise, so they also need
+  `ENABLE_MISE` and `node@lts` in `MISE_RUNTIMES`. Without those, each server is recorded as a
+  failure and Neovim still starts.
+- **`ENABLE_TMUX`** installs tmux and writes its config. The kitty, fish, git, lazygit and bat parts
+  of phase 61 have no toggle.
+- **`ENABLE_CLAUDE_CODE`** runs phase 62. The Claude Code keys in kitty, tmux, fish and Neovim are
+  defined regardless, and simply report that `claude` is missing.
+- **`ENABLE_DB_TOOLS`** installs `psql` for the Neovim database UI. Postgres itself is expected to run
+  in Docker.
 
-Two knobs live in a phase rather than in `config.env`, and both read an existing value first, so
-`config.local.env` can still set them:
+Three knobs live in a phase rather than in `config.env`, and all of them read an existing value
+first, so `config.local.env` can still set them:
 
 - **`K8S_REPO_VERSION`** (`phases/40-dev.sh`, default `v1.37`), because `pkgs.k8s.io` serves one
   minor series per repository and has no "latest". Bumping it rewrites
@@ -241,6 +257,10 @@ Two knobs live in a phase rather than in `config.env`, and both read an existing
   it on the old one.
 - **`HAKUSPACE_INSTALL_TIMEOUT`** (`phases/20-hakuspace.sh`, default 900 seconds), the budget
   phase 20 gives upstream's installer before it kills it. Raise it on a slow link.
+- **`CLAUDE_CHANNEL`** (`phases/62-claude.sh`, default `stable`), the Claude Code release channel the
+  dnf repository follows. `latest` is the other one. It is read only on the run that first writes
+  `/etc/yum.repos.d/claude-code.repo`, which is never rewritten afterwards; to switch channels later,
+  change `stable` or `latest` in that file's `baseurl` and run `sudo dnf upgrade claude-code`.
 
 The remaining pins are edited in place on purpose: the Kubernetes tool releases in
 `phases/40-dev.sh` (k9s, kind, k3d, kubectx/kubens) and the Nerd Font release in
@@ -287,6 +307,12 @@ colour you chose by hand is left alone and the phase says so:
 Change `ACCENT` in `config.env` and the stamp no longer matches, so the next run applies the new
 value.
 
+The helper recolours what `gen_style.sh` draws: the bar, rofi, swaync, niri's focus ring and kitty's
+font. The terminal stack takes its colours from `config/palette.env` instead, rendered when phases
+60 to 62 deploy: kitty's text and palette, Neovim, tmux, fzf, delta, lazygit and the Claude Code
+status line. So after an `accent` change, re-run those three phases as well; see
+[Terminal and editor](#terminal-and-editor).
+
 `gen_style.sh` is the single writer of `ACCENT_COLOR`, `FONT_FAMILY` and `FONT_SIZE` into
 `~/.local/state/hakuspace/state/state.env`. Calling it without `--accent`, which is what upstream's
 own installer does, preserves the current accent while still applying `--font` and `--size`.
@@ -325,7 +351,7 @@ installs it.
 | `setting.sh` | Wallpaper dir and rotation interval, `ACCENT_COLOR_BASED_ON_WALLPAPER`, night light temperature, recorder command and options, custom waybar mode registration, the app list `exit.sh` shuts down gracefully. Sourced, so keep it purely declarative |
 | `hypridle.conf` | Idle timeouts. Must sit here, not in `hakucfg/config/`; see below |
 | `wm/niri-custom.kdl` | All niri overrides: output scale, input, layout, keybinds, environment, window rules. Included last by `~/.config/niri/config.kdl`, so it wins |
-| `config/kitty.conf` | Terminal font size, opacity, scrollback. Included after the generated theme, so it wins |
+| `config/kitty.conf` | Written by phase 61 from `config/kitty/kitty.conf.tmpl`: the palette, split layouts and keys, tab bar, 162 ppi text tuning and scrollback in Neovim. Font family and size stay with `gen_style.sh`. Included after the generated theme, so it wins. Your edits are kept; see [Customising safely](#customising-safely) |
 | `config/dockbar_pin_apps` | Dock pins. Read only, safe to edit. Note that `dockbar_manager.sh --icon-size` rewrites `~/.config/waybar/dockbar/config`, which is hakuspace-managed and is overwritten on update |
 | `general-menu.sh` | Your own entries in the Rofi "General" menu |
 
@@ -337,12 +363,14 @@ edited in place key by key, not replaced, so your own edits to the rest of that 
 repo's copy is a first-install seed only. Anything phase 30 does replace is copied to
 `<file>.rice-backup.<timestamp>` next to it first.
 
-There is no fish hook in `~/hakucfg` in v2.3.1, so shell customisation has nowhere safe to live:
-`~/.config/fish` is a managed directory and the whole thing is moved aside on the next update.
-Keep fish tweaks in this repo and re-apply them, or accept the restore-from-`~/.backup` step.
-Phase 40 writes its own fish snippets into `~/.config/fish/conf.d/rice-*.fish` for exactly that
-reason: every run re-asserts them, so an update that moves the directory aside costs nothing this
-repo owns.
+There is no fish hook in `~/hakucfg` in v2.3.1, and `~/.config/fish` is a managed directory that
+the next update moves aside whole. fish also reads `~/.local/share/fish/vendor_conf.d` and
+`vendor_functions.d`, which hakuspace never touches, so phase 61 puts the rice fish layer there and
+it survives updates without a re-run. Put your own fish tweaks in a file of your own in that
+directory, or in this repo. Two rules apply there: a file of the same name in `~/.config/fish/conf.d`
+or `functions` replaces the vendor one, and hakuspace's `config.fish` runs after every snippet, so an
+abbreviation sharing a name with one of hakuspace's loses. Phase 40's older snippets still live in
+`~/.config/fish/conf.d/rice-*.fish`, which is why phase 40 re-asserts them on every run.
 
 After editing `wm/niri-custom.kdl`:
 
@@ -430,6 +458,9 @@ authoritative list for the machine in front of you. The first four tables are ha
 `keybinds.kdl`; the last one is ours. Binds marked **overridden** are taken over by
 `config/hakucfg/wm/niri-custom.kdl` and do something else here. There are five of those:
 `Mod+Q`, `Mod+W`, `Mod+C`, `Mod+Shift+V` and `Mod+Tab`.
+
+Keys inside the terminal (Neovim, tmux, kitty, fish and Claude Code) are in
+[Terminal and editor](#terminal-and-editor). None of them uses Super.
 
 The shape of the additions is macOS muscle memory, with Cmd as Mod: close is `Cmd+W` and `Cmd+Q`,
 copy-adjacent keys open the clipboard rather than destroying something, the launcher is Spotlight,
@@ -545,6 +576,260 @@ recorder by hand.
 
 ---
 
+## Terminal and editor
+
+Phases 60 to 62 build the half of the machine you actually type into: Neovim configured by hand
+in VimScript with vim-plug, kitty, fish, tmux, git, lazygit and bat themed from one palette, and
+Claude Code wired into the shell, the terminal and the editor. There is no editor distribution
+anywhere. Every config is a plain file you can read top to bottom. Lua appears only where Neovim
+offers no VimScript interface: the LSP setup, the diagnostic counts in the statusline and two
+one-line `luaeval` calls. Nothing keeps a heavy process resident: fzf, git and the formatters run as
+short jobs and exit.
+
+### Where everything lives
+
+| Tool | Deployed to | Phase | Survives a hakuspace update |
+|---|---|---|---|
+| Neovim config | `~/.config/nvim`: `init.vim`, `plugin/` (one file per concern), `after/ftplugin/`, `colors/rice.vim` | 60 | Yes, hakuspace does not own `nvim` |
+| Neovim plugins, parsers | `~/.local/share/nvim/plugged`, `~/.local/share/nvim/site/parser` | 60 | Yes |
+| Language servers | mise: basedpyright, TypeScript 7 (`tsc`), typescript-language-server, biome, hurl. dnf: ruff | 60 | Yes |
+| kitty | `~/hakucfg/config/kitty.conf`, which hakuspace's `kitty.conf` includes last | 61 | Yes |
+| fish | `~/.local/share/fish/vendor_conf.d/rice-terminal.fish` and `vendor_functions.d/{pj,mkcd,dsh}.fish` | 61 | Yes. The update moves `~/.config/fish` aside, not this |
+| tmux | `~/.config/tmux/tmux.conf` | 61 | Yes |
+| git | `~/.config/git/config`, `ignore`, `delta.gitconfig`. `~/.gitconfig` is read afterwards and wins | 61 | Yes |
+| lazygit, bat | `~/.config/lazygit/config.yml`, `~/.config/bat/config` | 61 | Yes |
+| Scripts | `~/.local/share/rice/bin`, on fish's PATH, kitty's launch path and the session PATH | 61, 62 | Yes. `~/.local/bin` does not |
+| Claude Code | `/usr/bin/claude` from Anthropic's dnf repository; `~/.claude/settings.json`, `statusline.sh`, `hooks/notify.sh` | 62 | Yes |
+
+Colours come from `config/palette.env`, rendered into kitty, the Neovim colorscheme, tmux, fzf,
+delta, lazygit and the Claude Code status line when each phase deploys. ANSI colour 6 is the
+accent, so most CLI highlights follow it too. After changing `ACCENT`, re-run all three phases:
+
+```bash
+~/rice/bootstrap.sh --only 60-neovim --only 61-terminal --only 62-claude
+```
+
+### Daily workflow
+
+1. `Mod+Return` opens kitty. Type `t` and Enter: the abbreviation becomes
+   `tmux new-session -A -s main`, which attaches to the `main` session or creates it. `pj` fuzzy-finds
+   a git repository under `~/code`, `~/projects`, `~/src` or `~/work` (set `PJ_ROOTS` for others)
+   and changes into it; `pj -t` gives the project its own tmux session instead.
+2. `v .` or `v <file>` starts Neovim. `Space f f` finds files, `Space f r` greps the project live,
+   `-` browses the current file's directory.
+3. Completion opens as you type, from the language server first and buffer words after. `C-n` and
+   `C-p` move, `C-y` accepts and also adds the import. `gd`, `K`, `grr`, `grn` and `gra` are
+   definition, hover, references, rename and code action. Saving a Python file organises imports
+   and formats with ruff; TypeScript and JavaScript get the same from biome in projects that use
+   it. `:make` type-checks the whole project into the quickfix list.
+4. `C-h` `C-j` `C-k` `C-l` move between Neovim splits and tmux panes as one grid, with no plugin
+   on either side.
+5. `Space g g` is fugitive's status window, `]h` and `[h` walk the changed hunks, `Space h s`
+   stages one. `lg` in fish opens lazygit, which pages through delta.
+6. `Space a a` opens Claude Code in a split rooted at the git repository. Select lines and press
+   `Space a s` to hand them over with their path and line range, or `Space a b` to reference the
+   whole file. `C-\ C-n` leaves the terminal split so `C-h` and friends work again.
+7. With `DATABASE_URL` exported for the project (direnv's `.envrc` is the natural place, with the
+   password in `~/.pgpass`), a `.sql` buffer completes table names from the live database and
+   `Space d e` runs the paragraph under the cursor. `Space d u` opens the database drawer.
+8. In a `.hurl` file, `Space r r` runs the request under the cursor and shows the response in a
+   split. Variables such as tokens go in a `.env.hurl` anywhere above the file.
+
+### Cheatsheet
+
+Leader is `Space`. `prefix` is tmux's `C-Space`. kitty's `kitty_mod` is `ctrl+shift`. Nothing in
+this table uses Super, which belongs to niri.
+
+| Keys | Tool | Action |
+|---|---|---|
+| **Move** | | |
+| `C-h` `C-j` `C-k` `C-l` | Neovim, tmux | Split or pane in that direction; at Neovim's edge it hands over to tmux. Outside tmux, Neovim splits only |
+| `C-\` `C-n` | Neovim | Leave terminal mode (Claude Code split, fzf) before moving |
+| `ctrl+shift+alt+h` `j` `k` `l` | kitty | Focus the kitty split in that direction |
+| `ctrl+shift+d` / `ctrl+shift+alt+d` | kitty | New split side by side / stacked, in the current directory |
+| `ctrl+shift+alt+z` / `ctrl+shift+alt+r` | kitty | Zoom the active split / rotate the arrangement |
+| `ctrl+shift+alt+1` .. `5`, `ctrl+shift+t` | kitty | Go to tab 1 to 5, new tab in the current directory |
+| `ctrl+shift+c` / `ctrl+shift+v` | kitty | Copy / paste, unchanged |
+| `ctrl+shift+h` | kitty | Scrollback in Neovim, `q` closes |
+| `prefix \|` or `%`, `prefix -` or `"` | tmux | Split side by side / stacked, in the pane's directory |
+| `prefix c` | tmux | New window in the pane's directory |
+| `prefix H` `J` `K` `L` | tmux | Resize, repeatable |
+| `prefix C-l` | tmux | Clear the shell screen, since plain `C-l` moves panes |
+| `prefix r` / `prefix C-Space` | tmux | Reload `tmux.conf` / send a literal `C-Space` |
+| copy mode `v` `C-v` `y` | tmux | Select, toggle rectangle, copy to tmux and the system clipboard over OSC 52 |
+| `pj [-t] [query]`, `mkcd DIR` | fish | Jump to a git project (as a tmux session with `-t`), make a directory and enter it |
+| **Find and edit** | | |
+| `Space f f` `f g` `f b` `f o` | Neovim | Files, git files, buffers, recent files |
+| `Space f r` / `Space f w` | Neovim | Live ripgrep / ripgrep the word under the cursor |
+| `Space f l` `f h` `f :` | Neovim | Lines in the buffer, help tags, command history |
+| `-`, then `F5` inside it | Neovim | netrw on the current file's directory, refresh the listing |
+| `Esc` | Neovim | Clear the search highlight |
+| visual `<` `>` | Neovim | Indent and keep the selection |
+| `gc` `gcc`, `ys` `ds` `cs`, visual `S` | Neovim | Comment (built in), surround (vim-surround) |
+| insert `C-n` `C-p` `C-y` | Neovim | Move in and accept the completion menu |
+| `ctrl-t` / `ctrl-r` / `alt-c` | fish | fzf file picker with bat preview / history / cd into a directory |
+| **Language servers** | | |
+| `gd` `K` | Neovim | Definition, hover |
+| `grr` `gri` `grt` `gO` | Neovim | References, implementation, type definition, document symbols |
+| `grn` `gra`, insert `C-s` | Neovim | Rename, code action, signature help |
+| `[d` `]d` `C-w d` | Neovim | Previous / next diagnostic, diagnostic float |
+| `Space l f` / `Space l F` | Neovim | Format now / toggle format on save for this buffer |
+| `Space l h` `l v` `l d` `l r` | Neovim | Inlay hints, diagnostics as virtual lines, diagnostics to the location list, restart servers |
+| **Git** | | |
+| `Space g g` `g b` `g d` `g w` `g l` | Neovim | fugitive status, blame, side-by-side diff, stage the file, commits touching the file |
+| `]h` `[h`, `ih` `ah` | Neovim | Next / previous hunk, hunk text object |
+| `Space h s` `h u` `h p` | Neovim | Stage (the selected lines in visual mode), undo, preview a hunk |
+| `gcm` `gds` `gpf` `grb` `gfu` `glo` | fish | `git commit -m`, `diff --staged`, `push --force-with-lease`, `rebase`, `commit --fixup`, `git lg` |
+| `lg` `gs` `gd` `ga` `gc` `gp` `gpl` `gsw` `gb` `gco` | fish | hakuspace's own: lazygit and the everyday git commands |
+| `git st` `lg` `ds` `sbs` `unstage` `amend` `undo` `pushf` `recent` `root` | git | Aliases from `~/.config/git/config` |
+| **Database and REST** | | |
+| `Space d u` `d f` `d c` | Neovim | Database drawer, find the buffer in it, add a connection |
+| `Space d e` | Neovim | SQL buffers: run the paragraph, or the selection |
+| `Space r r` `r i` `r f` | Neovim | Hurl buffers: run the request under the cursor, the same with headers, the whole file |
+| **Claude Code** | | |
+| `Space a a` / `Space a f` | Neovim | Toggle the Claude Code split for this git root / focus it, starting a session if needed |
+| `Space a c` | Neovim | Start with `claude --continue`, or focus the running session |
+| `Space a b` / visual `Space a s` | Neovim | Send the file as an `@path` reference / send the selection with `path:start-end` |
+| `:Claude [args]`, `:Claude! [args]` | Neovim | Toggle, or start with arguments / end this root's session and start fresh |
+| `prefix a` | tmux | Claude Code in a side split at the pane's git root |
+| `ctrl+shift+alt+c` | kitty | Claude Code in a side-by-side split at the current directory |
+| `cl` `clco` `clre` | fish | `claude`, `claude --continue`, `claude --resume` |
+| `Ctrl+G` / `Ctrl+J` / `Ctrl+B` | Claude Code | Edit the prompt in Neovim / newline / background a running command (one press: the prefix is not `C-b`) |
+| **Everything else in fish** | | |
+| `v` / `t` | fish | `nvim` / `tmux new-session -A -s main` |
+| `dk` `dps` `dpsa` `dimg` `dlog` `dex` `drun` `dprune`, `dsh` | fish | Docker, and a shell in a container picked with fzf |
+| `dcu` `dcd` `dcl` `dcps` `dce` `dcr` `dcrs` `dcp` | fish | docker compose up -d, down, logs -f, ps, exec, run --rm, restart, pull |
+| `k` `kg` `kgp` `kgs` `kgd` `kd` `kl` `kex` `ka` `kdel` `kpf` `krr` `kctx` `kns` | fish | kubectl, kubectx and kubens |
+| `k9a` `k9r`, `kindc` `kindd` `kindl` | fish | k9s on all namespaces / read-only; kind create, delete and list clusters |
+| `ni` `nr` `nrd` `nrt`, `va` | fish | npm install, run, run dev, test; activate `.venv` |
+
+Abbreviations expand when you press Space or Enter, so what runs is always visible first.
+
+### Keys that behave differently here
+
+The five layers were audited against each other, against kitty 0.47's and tmux 3.7's defaults,
+fish 4's and Neovim 0.12's. No terminal key collides with niri, and no rice kitty key replaces a
+kitty default. These are the deliberate trade-offs that remain:
+
+- **Inside tmux, `C-h` `C-j` `C-k` `C-l` move panes unless the pane runs Neovim or fzf.** A plain
+  shell loses fish's `ctrl-l` clear-screen (use `prefix C-l`), `ctrl-k` kill-line and `ctrl-j`.
+  Claude Code in a tmux pane loses `Ctrl+J` newline, `Ctrl+K` and `Ctrl+L` the same way, and
+  Shift+Enter reaches it as plain Enter, so a newline there is `\` then Enter. In plain kitty, or
+  in the Neovim Claude split, every one of those keys works.
+- **`C-Space` is the tmux prefix**, so fish's "insert a space without expanding the abbreviation"
+  is `C-Space C-Space` inside tmux.
+- **`prefix L` resizes** rather than switching to the last session; `prefix (` and `prefix )` still
+  cycle sessions, and `pj -t` jumps straight to one.
+- **Neovim's `C-l` moves** instead of clearing the highlight and running `:diffupdate`. `Esc` clears
+  the highlight; in a diff, run `:diffupdate` yourself.
+- **`-` opens netrw** rather than moving to the previous line, `gd` goes to the language server's
+  definition, and visual `S` surrounds rather than substituting lines.
+- **fzf takes fish's `ctrl-t`, `ctrl-r` and `alt-c`** (transpose, the history pager and
+  capitalise-word).
+- **In tmux copy mode, `C-j` moves panes** instead of copying; Enter and `y` still copy.
+- **kitty splits and tmux panes are separate grids.** `C-h` and friends join Neovim to tmux only.
+  Pick one of the two for splitting a window.
+
+### Neovim
+
+- **Language servers** attach only when their binary is on PATH, so a missing one stays quiet.
+  Python gets basedpyright (type checking `standard`, and a `pyproject.toml` overrides it) plus ruff.
+  TypeScript is served by TypeScript 7's native `tsc` unless the project's `node_modules` pins an
+  older TypeScript, in which case typescript-language-server loads the project's own copy. The
+  choice is made when a buffer attaches, so run `Space l r` after `npm install` in a fresh clone.
+- **Formatting on save** is ruff's and biome's alone, after organising imports. The TypeScript
+  servers never format on save. biome attaches wherever `biome.json` exists or `package.json`
+  mentions biomejs.
+- **Diagnostics** colour the line number and show text on the current line only, leaving the sign
+  column to git hunks. `Space l v` swaps to full virtual lines.
+- **Completion** is Neovim 0.12's native `autocomplete`, with no completion plugin.
+- **Databases** come from `$DATABASE_URL` or connections added in the drawer. Never add a URL with a
+  password through `Space d c`: the drawer saves connections as plain text. `~/.pgpass` (mode 0600)
+  is where passwords belong.
+- **REST requests** are plain hurl files; hurl is a single native binary, not a plugin. The response
+  split is JSON-highlighted when the body is JSON, and a failed assert shows hurl's error output.
+- **`:checkhealth`** once after the first install is worth the minute it takes.
+
+### Claude Code
+
+- **Install and update.** Phase 62 adds Anthropic's signed dnf repository on the `stable` channel,
+  checking the signing key's fingerprint before importing it, and installs `/usr/bin/claude`, which a
+  hakuspace update cannot move. Updates are `sudo dnf upgrade claude-code`; the package does not
+  update itself. Set `CLAUDE_CHANNEL=latest` in `config.local.env` before the first run for the
+  faster channel. The first `claude` asks you to sign in.
+- **User settings** in `~/.claude/settings.json`: attribution is off entirely (no co-author trailer
+  in commits, no footer in pull requests, no session link), and the only pre-approved commands are
+  exact read-only ones such as `git status`, `git diff` and `docker ps`. Wildcards are left out on
+  purpose, because an allow rule like `Bash(git diff *)` would also approve
+  `git diff --output=FILE`. Reads of `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube/config`, `~/.pgpass`,
+  the gh token, Claude Code's own credentials and every `.env` file are denied.
+- **Status line.** Model, repository and subdirectory, branch with a dirty marker and ahead/behind
+  arrows, context used, the five-hour limit (green, yellow from 50%, red from 80%), session cost,
+  lines added and removed, and the pull request number. Below 100 columns the last two drop off.
+  `NO_COLOR` turns the colours off.
+- **Notifications** go through `notify-send` to swaync: when Claude Code needs an answer or
+  permission, and when it finishes a turn. The finish notice stays quiet while the kitty window
+  running the session has focus. Claude Code's own terminal notification is switched off so
+  nothing arrives twice.
+- **`claude-scaffold [DIR]`** starts a project off with `.claude/settings.json`, an allowlist for
+  that project's test, lint, format and type-check commands in Python and Node (pytest, ruff,
+  basedpyright, mypy, npm and pnpm scripts, vitest, jest, tsc, eslint, biome, prettier, compose
+  logs), and a starter `CLAUDE.md` whose Commands section follows the lock files it finds. It never
+  overwrites a file, and adds `.claude/settings.local.json` to an existing `.gitignore` once.
+- **In Neovim** there is one session per git root. Hiding the split keeps the conversation running,
+  and sending to a root with no session starts one first. Multi-line selections arrive as a single
+  bracketed paste, so nothing is submitted early. `g:claude_cmd`, `g:claude_split` (`auto` goes
+  vertical from 140 columns, or `vertical`, `horizontal`) and `g:claude_size` (default 0.4) tune it.
+
+### Customising safely
+
+Every file phases 60 to 62 deploy is yours to edit in place. The phases remember a checksum of what
+they last wrote. On the next run a file that still matches is updated; a file you changed is kept
+exactly as it is, and the repo's newer version is parked beside the others, at the same path
+relative to your home directory:
+
+```bash
+ls -R ~/.local/state/rice/pending
+nvim -d ~/.config/nvim/init.vim ~/.local/state/rice/pending/.config/nvim/init.vim
+```
+
+Merge what you want from the parked copy. To take the repo's version wholesale, delete your copy
+and re-run the phase. Claude Code rewrites its own `settings.json` when you use `/model` or
+`/config`, which counts as an edit, so after that the repo's settings arrive in `pending/` too.
+
+A change that should survive a reinstall belongs in the repo instead: `config/nvim/`,
+`config/kitty/kitty.conf.tmpl`, `config/fish/`, `config/tmux/tmux.conf.tmpl`, `config/git/`,
+`config/lazygit/`, `config/claude/`. Files ending in `.tmpl` take `@@TOKEN@@` colours from
+`config/palette.env`. Phases never delete a deployed file the repo stops shipping, so remove a
+renamed file by hand.
+
+Two names are reserved across the stack: Neovim's `<leader>a` belongs to Claude Code, and nothing
+in Neovim may map `<C-Space>`, the tmux prefix.
+
+### Adding a Neovim plugin
+
+vim-plug is the only plugin manager, and the list is the `plug#begin()` block in `init.vim`:
+
+```vim
+" ~/.config/nvim/init.vim
+call plug#begin()
+  " ...
+  Plug 'tpope/vim-unimpaired'
+  Plug 'kristijanhusak/vim-dadbod-ui', { 'on': ['DBUI', 'DBUIToggle'] }   " loaded on first use
+call plug#end()
+```
+
+Restart Neovim and run `:PlugInstall`. Settings and maps for the plugin go in a new
+`~/.config/nvim/plugin/<name>.vim`, one file per concern like the rest. `:PlugUpdate` updates every
+plugin, then `:TSUpdate` rebuilds the parsers against it; after deleting a `Plug` line, `:PlugClean`
+removes the checkout. A tree-sitter language is added to `g:rice_treesitter_parsers` in
+`plugin/treesitter.vim` and installed with `:TSInstall <lang>`. A language server needs its binary
+(for example `mise use --global npm:<package>`) and a line in the `servers` table in
+`plugin/lsp.vim`; nvim-lspconfig already ships its definition. `99-verify` reads the plugin and
+parser lists from these files, so what you add is checked too.
+
+---
+
 ## Driving upstream's installer
 
 Phase 20 runs upstream's `install.sh` with a fixed answer sequence on its stdin. On a fresh
@@ -653,9 +938,16 @@ again.
 
 - **Pick the Niri session at GDM.** Gear icon at the login screen, once. Nothing here changes the
   default session.
-- **Log out and back in** before four things work: fish as the login shell, the `docker` group,
-  the mise shims in GUI-launched IDEs (the `environment.d` drop-in is read once, when the systemd
-  user manager starts), and the new font in already-running apps.
+- **Log out and back in** before these work: fish as the login shell, the `docker` group, the mise
+  shims in GUI-launched IDEs and in a Neovim started from the launcher, `~/.local/share/rice/bin` on
+  the session PATH (both `environment.d` drop-ins are read once, when the systemd user manager
+  starts), and the new font in already-running apps.
+- **Sign in to Claude Code.** Run `claude` once in a terminal and follow its login prompt. Updating it
+  later is `sudo dnf upgrade claude-code`.
+- **`:checkhealth` in Neovim**, once, and `:PlugUpdate` then `:TSUpdate` whenever you want newer
+  plugins. Nothing updates them automatically.
+- **Merge parked config versions.** After a re-run, `ls -R ~/.local/state/rice/pending` lists every
+  file you edited that the repo has a newer version of.
 - **Install the video-call apps.** Phase 00 only adds the unfiltered Flathub remote;
   `flatpak install flathub <app-id>` for Slack, Zoom or Teams is yours to run.
 - **`fprintd-enroll`.** Phase 50 installs fprintd and turns on the authselect `with-fingerprint`
@@ -782,6 +1074,33 @@ grep -n 'timeout_' ~/hakucfg/hypridle.conf
 hypridle reads its config at startup, so log out and back in after changing it. A file left only
 at `~/hakucfg/config/hypridle.conf` is the dead one and explains the unchanged behaviour.
 
+**A change in the repo never reached a deployed config.** You had edited that file, so it was kept
+and the repo's version parked instead:
+
+```bash
+ls -R ~/.local/state/rice/pending
+nvim -d ~/.config/tmux/tmux.conf ~/.local/state/rice/pending/.config/tmux/tmux.conf
+```
+
+Delete your copy and re-run the phase to take the repo's version wholesale.
+
+**Neovim starts without plugins, colours or highlighting.** `99-verify` names what is missing. A
+failed clone or parser build is recorded, not fatal, so re-run `--only 60-neovim`, or inside Neovim
+run `:PlugInstall` and `:TSInstall <lang>`.
+
+**A language server does not attach.** `:checkhealth vim.lsp` shows which servers are enabled. A
+server is enabled only when its binary is on PATH, and a Neovim started from the launcher sees the
+mise shims only after a re-login. For TypeScript, run `:lsp restart` after `npm install`.
+
+**`C-h` `C-j` `C-k` `C-l` do not cross from Neovim into tmux.** tmux passes the keys to a pane only
+when `ps` finds Neovim or fzf on that pane's tty, and Neovim calls `tmux select-pane` only when
+`$TMUX` is set:
+
+```bash
+tmux list-keys -T root | grep C-h     # must show the if-shell pass-through
+ls ~/.tmux.conf                        # loaded before ~/.config/tmux/tmux.conf if it exists
+```
+
 **Roll back hakuspace's dotfiles.** Upstream backs up anything it replaces into
 `~/.backup/Backup_<timestamp>/`, using `mv`, so a pre-existing `~/.config/kitty` was moved there
 rather than merged. To restore:
@@ -844,6 +1163,10 @@ git diff v2.3.1..<new-tag> -- install.sh scripts/functions.sh
    aside: phase 30 puts the `accent` helper back, phase 40 the `rice-*.fish` snippets. Phase 20 is
    still worth re-running afterwards for the package list and the clone check; it skips the
    installer and costs nothing.
+
+   Phases 60 to 62 need no re-run: nothing they write sits in a directory the update moves. Do check
+   that the new `~/.config/kitty/kitty.conf` still includes `~/hakucfg/config/kitty.conf`; without that
+   line kitty loses every rice setting, and phase 61 and `99-verify` both say so.
 
 Do not run upstream's `update.sh` directly. It is interactive, it asks whether to track `main` or
 the latest tag, and it overwrites everything under `~/.config` that it manages. Going through
@@ -910,3 +1233,22 @@ phase 20 keeps the pin meaningful.
 - **`apply_style.sh` is a no-op outside a session.** It needs `$NIRI_SOCKET` and live kitty
   sockets, so a theme change made from GNOME or a TTY is generated on disk and only visible after
   the next Niri login. That is expected, not a failure.
+- **Claude Code under tmux has no Shift+Enter.** tmux asks the outer terminal for xterm's
+  modifyOtherKeys, which kitty ignores, so Shift+Enter arrives as Enter, and tmux takes `Ctrl+J` for
+  pane movement. `\` then Enter
+  is the newline there. Plain kitty and the Neovim split are unaffected.
+- **The finish notification is suppressed whenever the kitty window running Claude Code has focus**,
+  even when its Neovim split is hidden. Inside tmux the focus test cannot match, so it always shows.
+- **biome formats on save in any project whose `package.json` mentions biomejs**, even without a
+  `biome.json`. `Space l F` turns it off for the buffer.
+- **The TypeScript server is chosen when a buffer attaches**, from `node_modules/typescript`. A fresh
+  clone gets TypeScript 7's `tsc` until `npm install` and `:lsp restart`.
+- **TypeScript 7 from npm runs behind a small resident Node wrapper**, about 44 MB in front of the
+  native binary. Pointing Neovim at the binary directly would depend on mise's internal layout.
+- **kitty's scrollback pager and fish's `MANPAGER` assume Neovim.** fish checks for `nvim` first;
+  kitty does not, so with `ENABLE_NEOVIM=false` `ctrl+shift+h` opens nothing.
+- **The `.env` denial is broad.** User settings deny reading any `.env`, and `claude-scaffold`
+  also denies `.env.*`, which includes `.env.example`. Relax it per project in
+  `.claude/settings.json` if that gets in the way.
+- **Closing a kitty window asks for confirmation** while Neovim or Claude Code is running in it,
+  because phase 61 sets `confirm_os_window_close -1` over hakuspace's 0.

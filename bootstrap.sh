@@ -143,6 +143,9 @@ Next steps:
   1. Reboot.
   2. At the GDM login screen, click the gear icon and choose the "Niri" session.
   3. Log in. Press Super+Shift+Slash to see the keybinding cheatsheet.
+  4. Open kitty with Super+Return and run claude once to sign in to Claude Code.
+  5. Run nvim, then :checkhealth. Space is the leader and C-Space the tmux prefix;
+     the README chapter "Terminal and editor" lists every key.
 
   Still manual, because they need a human:
   - fprintd-enroll          enrol a fingerprint (needs an actual finger)
