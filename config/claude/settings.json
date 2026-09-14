@@ -57,7 +57,13 @@
       "Read(~/.pgpass)",
       "Read(~/.config/gh/hosts.yml)",
       "Read(~/.claude/.credentials.json)",
-      "Read(//**/.env)"
+      "Read(//**/.env)",
+      "Read(//**/.env.*[^e])",
+      "Read(//**/.env.*[^l]e)",
+      "Read(//**/.env.*[^p]le)",
+      "Read(//**/.env.*[^m]ple)",
+      "Read(//**/.env.*[^a]mple)",
+      "Read(//**/.env.*[^xs]ample)"
     ]
   }
 }

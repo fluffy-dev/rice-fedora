@@ -23,7 +23,7 @@ FLATHUB_REPO_URL="https://dl.flathub.org/repo/flathub.flatpakrepo"
 # no "wget" package on current Fedora at all, only wget2-wget, which owns
 # /usr/bin/wget. Asking for the binary keeps both cases from aborting the phase.
 baseline_packages() {
-    local pkgs=(git unzip tar which)
+    local pkgs=(git unzip tar which diffutils gum)
     command -v wget >/dev/null 2>&1 || pkgs+=(wget2-wget)
     command -v curl >/dev/null 2>&1 || pkgs+=(curl)
     printf '%s\n' "${pkgs[@]}"
@@ -58,7 +58,7 @@ dnf_conf_set() {
         printf '[main]\n%s=%s\n' "$key" "$value" > "$tmp"
     fi
 
-    if [[ -r "$DNF_CONF" ]] && cmp -s "$DNF_CONF" "$tmp"; then
+    if same_file "$DNF_CONF" "$tmp"; then
         rm -f "$tmp"
         log_skip "dnf.conf already sets $key=$value"
         return 0
@@ -177,11 +177,19 @@ system_upgrade() {
 
 # Refresh the firmware metadata and report what is available. Updates are never
 # applied here: a firmware flash wants a charged battery and a human present.
+#
+# fwupdmgr exits 0 when it has something to report, 2 when a command succeeded
+# with nothing to do, and anything else on failure, so only 2 means up to date.
+# The --no-*-check flags and the closed stdin stop it from pausing to offer an
+# unreported-history upload, a stale-metadata refresh or a remote to enable.
 firmware_report() {
     command -v fwupdmgr >/dev/null 2>&1 || pkg_install fwupd
 
+    local quiet=(--no-unreported-check --no-metadata-check --no-remote-check)
+
     if is_dry_run; then
-        printf '  %s[dry-run]%s fwupdmgr refresh --force, then fwupdmgr get-updates\n' "$C_DIM" "$C_RESET"
+        printf '  %s[dry-run]%s fwupdmgr refresh --force, then fwupdmgr get-updates %s\n' \
+            "$C_DIM" "$C_RESET" "${quiet[*]}"
         return 0
     fi
 
@@ -191,17 +199,29 @@ firmware_report() {
         return 0
     fi
 
-    sudo fwupdmgr refresh --force >/dev/null 2>&1 || \
-        log_warn "firmware metadata refresh failed, the report below may be stale"
-
-    local updates rc=0
-    updates="$(sudo fwupdmgr get-updates 2>&1)" || rc=$?
-    if (( rc == 0 )); then
-        log_warn "firmware updates are available, apply them yourself with: sudo fwupdmgr update"
-        printf '%s\n' "$updates" | sed 's/^/      /'
-    else
-        log_ok "no firmware updates pending"
+    local rc=0
+    sudo fwupdmgr refresh --force "${quiet[@]}" </dev/null >/dev/null 2>&1 || rc=$?
+    if (( rc != 0 && rc != 2 )); then
+        log_warn "firmware metadata refresh failed (exit $rc), the report below may be stale"
     fi
+
+    local updates
+    rc=0
+    updates="$(sudo fwupdmgr get-updates "${quiet[@]}" </dev/null 2>&1)" || rc=$?
+    case "$rc" in
+        0)
+            log_warn "firmware updates are available, apply them yourself with: sudo fwupdmgr update"
+            printf '%s\n' "$updates" | sed 's/^/      /'
+            ;;
+        2)
+            log_ok "no firmware updates pending"
+            ;;
+        *)
+            log_warn "fwupdmgr get-updates failed (exit $rc), firmware status is unknown:"
+            printf '%s\n' "$updates" | sed 's/^/      /' >&2
+            rice_record_failure firmware "fwupdmgr get-updates (exit $rc)"
+            ;;
+    esac
 }
 
 log_step "dnf configuration"

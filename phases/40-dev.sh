@@ -34,7 +34,13 @@ RICE_STAMP_DIR="/usr/local/share/rice"
 # per-IDE launcher scripts to ~/.local/share/JetBrains/Toolbox regardless.
 TOOLBOX_DIR="$HOME/.local/opt/jetbrains-toolbox"
 TOOLBOX_DATA_DIR="$HOME/.local/share/JetBrains/Toolbox"
-FISH_CONF_DIR="$HOME/.config/fish/conf.d"
+# hakuspace's update.sh and rollback.sh move ~/.config/fish aside wholesale, so
+# rice's fish snippets live in the per-user vendor directory, which fish also
+# reads and hakuspace never touches. Earlier runs wrote them to conf.d, where a
+# file of the same name shadows the vendor copy, so those are retired.
+FISH_VENDOR_CONF_DIR="$HOME/.local/share/fish/vendor_conf.d"
+FISH_LEGACY_CONF_DIR="$HOME/.config/fish/conf.d"
+FISH_SNIPPET_HEADER="# Managed by the rice bootstrap (phase 40)."
 
 # The graphical session is not a shell, so `mise activate` never runs for it.
 # Shims are the shell-free entry point, and a systemd user environment drop-in is
@@ -77,6 +83,22 @@ write_user_file() {
     cat > "$tmp"
     install_file "$tmp" "$dst" "$mode"
     rm -f "$tmp"
+}
+
+# Install a fish snippet from stdin into the vendor directory and remove the copy
+# an earlier run left in conf.d, which would otherwise shadow it. A conf.d file
+# not carrying this phase's header is the user's own and is only reported.
+write_fish_snippet() {
+    local name="$1" legacy="$FISH_LEGACY_CONF_DIR/$1"
+    write_user_file "$FISH_VENDOR_CONF_DIR/$name"
+
+    [[ -f "$legacy" ]] || return 0
+    if [[ "$(head -n1 -- "$legacy" 2>/dev/null)" == "$FISH_SNIPPET_HEADER" ]]; then
+        run rm -f -- "$legacy"
+        is_dry_run || log_ok "retired $legacy in favour of $FISH_VENDOR_CONF_DIR/$name"
+    else
+        log_warn "$legacy is not rice's and shadows $FISH_VENDOR_CONF_DIR/$name; remove it to use rice's version"
+    fi
 }
 
 # repo_add never rewrites an existing .repo file, so a version-pinned repository
@@ -500,7 +522,7 @@ REPO
         return 0
     fi
 
-    write_user_file "$FISH_CONF_DIR/rice-mise.fish" <<'FISH'
+    write_fish_snippet rice-mise.fish <<'FISH'
 # Managed by the rice bootstrap (phase 40).
 if type -q mise
     mise activate fish | source
@@ -534,13 +556,13 @@ FISH
     # install. Regenerating is cheap and idempotent, so it is done unconditionally.
     run mise reshim || log_warn "mise reshim failed; GUI-launched applications may not see every runtime"
 
-    # Reclaim the versions the moving requests above superseded; mise never
-    # removes them by itself, so each re-run would otherwise leave another whole
-    # toolchain on disk. --yes is what keeps it from asking per version, which
-    # matters because no phase may read stdin.
-    # Deliberately not `mise prune`, which deletes every version no tracked config
-    # references, including toolchains installed by hand for a one-off repro.
-    log_skip "leaving superseded runtime versions in place; run 'mise prune' by hand to reclaim disk"
+    # `mise use` keeps the version a moving request upgraded away from, so each
+    # re-run of this phase can leave one more toolchain on disk. `mise upgrade`,
+    # which the rice Update menu runs, uninstalls superseded versions by default,
+    # so reclaiming them is left to that path. Deliberately not `mise prune` here,
+    # which deletes every version no tracked config references, including
+    # toolchains installed by hand for a one-off repro.
+    log_skip "superseded runtime versions stay until 'mise upgrade' prunes them"
 }
 
 # --------------------------------------------------------------- jetbrains ---
@@ -658,7 +680,7 @@ jetbrains_paths() {
     local bin="$1"
 
     jetbrains_icon "$bin"
-    write_user_file "$FISH_CONF_DIR/rice-jetbrains.fish" <<FISH
+    write_fish_snippet rice-jetbrains.fish <<FISH
 # Managed by the rice bootstrap (phase 40).
 fish_add_path --global --path "$TOOLBOX_DIR/bin"
 fish_add_path --global --path "$TOOLBOX_DATA_DIR/scripts"

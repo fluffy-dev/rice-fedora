@@ -33,6 +33,9 @@ MISE_TOOLS=(
     "hurl@8"
 )
 
+# nvim-treesitter's main branch refuses an older tree-sitter-cli.
+TREE_SITTER_MIN_VERSION="0.26.1"
+
 # Seconds. Bounded so a hung clone or compile cannot stall the bootstrap.
 PLUG_TIMEOUT=600
 PARSER_TIMEOUT=900
@@ -50,8 +53,11 @@ nvim_headless() {
 install_packages() {
     log_step "Neovim and the tools behind it"
     pkg_install_required neovim
-    # tree-sitter-cli and gcc compile parsers; mise's pypi backend needs uv.
-    pkg_install git curl tar gcc tree-sitter-cli ruff fzf uv
+    # nvim-treesitter fetches grammars with curl and tar, generates them with
+    # tree-sitter-cli and compiles them with cc, which gcc provides.
+    pkg_install git curl tar gcc tree-sitter-cli
+    # mise's pypi backend needs uv.
+    pkg_install ruff fzf uv
     if enabled ENABLE_DB_TOOLS; then
         pkg_install postgresql
     else
@@ -150,16 +156,36 @@ VIM
     log_ok "plugins installed"
 }
 
+# Prints what nvim-treesitter needs to build parsers and cannot find, one per line.
+parser_toolchain_missing() {
+    local tool version
+    for tool in curl tar cc; do
+        command -v "$tool" >/dev/null 2>&1 || printf '%s\n' "$tool"
+    done
+    if ! command -v tree-sitter >/dev/null 2>&1; then
+        printf 'tree-sitter-cli\n'
+        return 0
+    fi
+    version="$(tree-sitter --version 2>/dev/null | awk '{print $2}')"
+    if [[ -z "$version" || "$(printf '%s\n' "$TREE_SITTER_MIN_VERSION" "$version" | sort -V | head -n1)" != "$TREE_SITTER_MIN_VERSION" ]]; then
+        printf 'tree-sitter-cli %s or newer (found %s)\n' "$TREE_SITTER_MIN_VERSION" "${version:-unknown}"
+    fi
+}
+
 # :TSInstall is asynchronous and would be cut off by a headless quit, so the
-# install task is awaited from Lua and its result turned into the exit status.
+# install task is awaited from Lua. nvim-treesitter counts a language as installed
+# when only its queries exist, so each parser is judged by its compiled library:
+# a missing one is rebuilt with force, and any still missing afterwards fails.
 install_parsers() {
     log_step "tree-sitter parsers"
     if is_dry_run; then
         printf '  %s[dry-run]%s nvim --headless: install g:rice_treesitter_parsers\n' "$C_DIM" "$C_RESET"
         return 0
     fi
-    if ! command -v tree-sitter >/dev/null 2>&1; then
-        log_warn "tree-sitter-cli is missing, skipping parsers; highlighting falls back to regex syntax"
+    local missing
+    missing="$(parser_toolchain_missing)"
+    if [[ -n "$missing" ]]; then
+        log_warn "cannot build parsers without: ${missing//$'\n'/, }; highlighting falls back to regex syntax"
         rice_record_failure nvim "tree-sitter parsers"
         return 0
     fi
@@ -172,14 +198,27 @@ if not ok or type(parsers) ~= 'table' then
   io.stderr:write('nvim-treesitter or g:rice_treesitter_parsers is missing\n')
   vim.cmd('cquit 2')
 end
-local finished, installed = pcall(function()
-  return treesitter.install(parsers, { summary = true }):wait(${PARSER_TIMEOUT} * 1000)
-end)
-if not (finished and installed) then
-  io.stderr:write('parser install failed: ' .. tostring(installed) .. '\n')
+local parser_dir = require('nvim-treesitter.config').get_install_dir('parser')
+local function unbuilt()
+  return vim.tbl_filter(function(lang)
+    return not vim.uv.fs_stat(vim.fs.joinpath(parser_dir, lang .. '.so'))
+  end, parsers)
+end
+local wanted = unbuilt()
+local finished, err = true, nil
+if #wanted > 0 then
+  finished, err = pcall(function()
+    return treesitter.install(wanted, { force = true, summary = true }):wait(${PARSER_TIMEOUT} * 1000)
+  end)
+end
+local missing = unbuilt()
+io.stderr:write('\n')
+if finished and #missing == 0 then
+  vim.cmd('qall!')
+else
+  io.stderr:write('parsers not built: ' .. table.concat(missing, ' ') .. (finished and '' or (' (' .. tostring(err) .. ')')) .. '\n')
   vim.cmd('cquit 1')
 end
-vim.cmd('qall!')
 LUA
     nvim_headless "$((PARSER_TIMEOUT + 30))" +"luafile $script" || rc=$?
     rm -f "$script"

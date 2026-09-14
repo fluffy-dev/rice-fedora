@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Claude Code: the CLI, user settings, a palette-themed status line, desktop notification hooks and a project scaffolder.
 #
-# The CLI comes from Anthropic's signed dnf repository rather than the native
-# installer, whose launcher lives in ~/.local/bin, a directory every hakuspace
-# update moves away. The rpm installs /usr/bin/claude, and its signing key is
-# imported only after its fingerprint matches the published one. Everything
+# The CLI comes from Anthropic's signed dnf repository as /usr/bin/claude, and the
+# signing key is imported only after its fingerprint matches the published one.
+# The native installer's launcher lives in ~/.local/bin, which every hakuspace
+# update and rollback moves away, so the rpm is installed even when a native copy
+# exists: that copy may shadow it until the next hakuspace update, and claude keeps
+# working afterwards. claude-scaffold lives in the rice bin directory, which
+# hakuspace never touches, for the same reason. Everything
 # written under ~/.claude is seeded, so a settings file changed by hand, or by
 # Claude Code itself through /model or /config, is kept and the repo's version
 # parked beside it. The Neovim side, config/nvim/plugin/claude.vim, ships with
@@ -24,7 +27,7 @@ CLAUDE_KEY_FINGERPRINT="31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
 
 CLAUDE_SRC="$RICE_ROOT/config/claude"
 CLAUDE_HOME="$HOME/.claude"
-RICE_USER_BIN="$HOME/.local/share/rice/bin"
+CLAUDE_NATIVE_LAUNCHER="$HOME/.local/bin/claude"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -93,15 +96,21 @@ install_claude() {
     log_step "Claude Code CLI"
     if pkg_installed claude-code; then
         log_skip "already installed: claude-code"
-    elif [[ -e "$HOME/.local/bin/claude" ]]; then
-        log_skip "a native Claude Code install owns ~/.local/bin/claude, not adding the rpm beside it"
-        log_warn "a hakuspace update moves ~/.local/bin away; re-running this phase afterwards installs the rpm"
     elif claude_repo; then
         pkg_install claude-code
     else
         log_warn "skipping the Claude Code rpm, its repository could not be set up"
     fi
+    native_install_notice
     claude_report_version
+}
+
+# A native install shadows /usr/bin/claude wherever ~/.local/bin comes first on
+# PATH, updates itself apart from dnf, and vanishes with the next hakuspace update.
+native_install_notice() {
+    [[ -e "$CLAUDE_NATIVE_LAUNCHER" || -L "$CLAUDE_NATIVE_LAUNCHER" ]] || return 0
+    log_warn "a native Claude Code launcher at $CLAUDE_NATIVE_LAUNCHER shadows /usr/bin/claude until a hakuspace update moves it away"
+    log_warn "  to keep only the rpm: rm -f ~/.local/bin/claude && rm -rf ~/.local/share/claude"
 }
 
 # ------------------------------------------------------------------ settings --
@@ -127,6 +136,7 @@ deploy_user_config() {
 
 deploy_scaffolder() {
     log_step "claude-scaffold"
+    rice_user_bin_ensure
     seed_file "$CLAUDE_SRC/bin/claude-scaffold.sh" "$RICE_USER_BIN/claude-scaffold" 0755
     log_info "run claude-scaffold in a project to add .claude/settings.json and a starter CLAUDE.md"
 }

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Health check for the finished desktop and its terminal tools: every item reports pass, fail or skip.
+# Health check for the finished desktop, its power policy and its terminal tools: every item reports pass, fail or skip.
 #
-# Nothing here writes, installs, starts, stops or pulls anything, so it is safe
-# to run at any time on a machine in daily use, and safe to run twice. Checks
-# that cannot be trusted at the service level, screen sharing and suspend among
-# them, are printed at the end as work for a human.
+# Nothing here installs, starts, stops, reloads or pulls anything, and nothing
+# outside a throwaway temporary directory is written, so it is safe to run at any
+# time on a machine in daily use, and safe to run twice. The rice Health menu
+# runs it for real even when the menu itself is in dry-run mode, which is why it
+# must stay read-only. Checks that cannot be trusted at the service level, screen
+# sharing and the lid among them, are printed at the end as work for a human.
 set -euo pipefail
 RICE_ROOT="${RICE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck source-path=SCRIPTDIR/..
@@ -32,8 +34,22 @@ NIRI_CUSTOM="$HOME/hakucfg/wm/niri-custom.kdl"
 NVIM_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 NVIM_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim"
 FISH_VENDOR_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/fish"
-RICE_USER_BIN="$HOME/.local/share/rice/bin"
 MISE_SHIMS_DIR="${MISE_DATA_DIR:-$HOME/.local/share/mise}/shims"
+
+# Written by phases 20, 30 and 50, spelled the way those phases spell them.
+HAKUCFG_DIR="$HOME/hakucfg"
+HYPRIDLE_OVERRIDE="$HAKUCFG_DIR/hypridle.conf"
+HYPRIDLE_MIN_VERSION="0.1.8"
+TREE_SITTER_MIN_VERSION="0.26.1"
+LOGIND_LID_DROPIN="/etc/systemd/logind.conf.d/60-rice-lid.conf"
+GDM_DCONF_DIR="/etc/dconf/db/gdm.d"
+GDM_POWER_KEYFILE="$GDM_DCONF_DIR/95-rice-power"
+POWER_SCHEMA="org.gnome.settings-daemon.plugins.power"
+SWAP_FILE="/swap/swapfile"
+SWAP_UNIT="swap-swapfile.swap"
+DISABLED_BY_RICE_DIR="$RICE_STATE_DIR/disabled-by-rice"
+HYPR_COPR_INCLUDEPKGS="includepkgs=hypridle hyprlock hyprpicker mpvpaper nwg-look xcur2png hyprlang hyprutils hyprgraphics"
+ACCENT_HELPER_TAG="# Switch the desktop accent colour and re-render every themed surface."
 
 VERIFY_PASS=0
 VERIFY_FAIL=0
@@ -414,10 +430,17 @@ check_nvim_parsers() {
             absent+="${absent:+ }$tool"
         fi
     done
+    local ts_version=""
+    if command -v tree-sitter >/dev/null 2>&1; then
+        ts_version="$(tree-sitter --version 2>/dev/null || true)"
+        ts_version="$(awk 'NR == 1 { print $2 }' <<<"$ts_version")"
+    fi
     if [[ -n "$absent" ]]; then
         v_fail "nvim build tools" "missing $absent, needed to install parsers and pypi servers"
+    elif [[ -z "$ts_version" ]] || ! version_at_least "$ts_version" "$TREE_SITTER_MIN_VERSION"; then
+        v_fail "nvim build tools" "tree-sitter-cli ${ts_version:-of unknown version} is older than $TREE_SITTER_MIN_VERSION, which nvim-treesitter refuses"
     else
-        v_pass "nvim build tools" "tree-sitter, gcc, uv"
+        v_pass "nvim build tools" "tree-sitter $ts_version, gcc, uv"
     fi
 }
 
@@ -603,12 +626,18 @@ check_lazygit_bat() {
     fi
 }
 
-# claude-scaffold lives here. environment.d is read when the user manager starts,
-# so a PATH missing from the running session only means no login has happened yet.
+# rice, accent, layout-notify, claude-scaffold and the powerprofilesctl stand-in
+# live here. environment.d is read when the user manager starts, so a PATH missing
+# from the running session only means no login has happened yet.
 check_rice_bin() {
     local dropin="$HOME/.config/environment.d/60-rice-bin.conf" session=""
+    local fish_path="$FISH_VENDOR_DIR/vendor_conf.d/rice-path.fish"
     if [[ ! -d "$RICE_USER_BIN" ]] || ! grep -q '^PATH=.*/\.local/share/rice/bin' "$dropin" 2>/dev/null; then
         v_fail "rice bin on PATH" "$RICE_USER_BIN or $dropin is missing; re-run phase 61-terminal"
+        return 0
+    fi
+    if ! grep -qF "$RICE_USER_BIN" "$fish_path" 2>/dev/null; then
+        v_fail "rice bin on PATH" "$fish_path is missing, so fish does not find rice or accent; re-run phase 61-terminal"
         return 0
     fi
     session="$(systemctl --user show-environment 2>/dev/null || true)"
@@ -616,6 +645,36 @@ check_rice_bin() {
         v_pass "rice bin on PATH" "$RICE_USER_BIN is on the session PATH"
     else
         v_skip "rice bin on PATH" "set in $dropin; takes effect at the next login"
+    fi
+}
+
+# The link is created when rice starts from the checkout, or at the end of a real
+# install, and resolves through readlink so the checkout can move.
+check_rice_command() {
+    local link="$RICE_USER_BIN/rice" target=""
+    if [[ -L "$link" ]]; then
+        target="$(readlink -f -- "$link" 2>/dev/null || true)"
+    fi
+    if [[ -n "$target" && -f "$target" && -x "$target" && "${target##*/}" == rice ]]; then
+        v_pass "rice command" "$link -> $target"
+    else
+        v_fail "rice command" "$link is not linked to a checkout; start rice once from the checkout, or finish an Install, to link it"
+    fi
+}
+
+# kitty sends Shift+Enter as CSI u only to a window whose title starts with "tmux ",
+# and that title comes from tmux, so each half is useless without the other.
+check_tmux_newline() {
+    if ! enabled ENABLE_TMUX; then
+        return 0
+    fi
+    local conf="$HOME/.config/tmux/tmux.conf" override="$HOME/hakucfg/config/kitty.conf"
+    if ! grep -qF "map --when-focus-on 'title:^tmux\\s' shift+enter" "$override" 2>/dev/null; then
+        v_fail "tmux shift+enter" "$override lacks the shift+enter map, so Shift+Enter submits in Claude Code under tmux"
+    elif ! grep -qxF 'set -g set-titles-string "tmux #S: #W"' "$conf" 2>/dev/null; then
+        v_fail "tmux shift+enter" "$conf does not title windows \"tmux #S: #W\", so kitty's shift+enter map never matches"
+    else
+        v_pass "tmux shift+enter" "kitty sends CSI 13;2u to windows tmux titles"
     fi
 }
 
@@ -652,9 +711,10 @@ check_claude_config() {
     elif ! command -v jq >/dev/null 2>&1; then
         v_skip "claude settings" "jq is not installed"
     elif jq -e '.attribution.commit == "" and .attribution.pr == "" and .attribution.sessionUrl == false
-            and .statusLine.type == "command" and (.hooks | has("Notification") and has("Stop"))' \
+            and .statusLine.type == "command" and (.hooks | has("Notification") and has("Stop"))
+            and ((.permissions.deny // []) | index("Read(//**/.env)") != null and index("Read(//**/.env.*[^e])") != null)' \
             "$settings" >/dev/null 2>&1; then
-        v_pass "claude settings" "attribution off, status line and notification hooks set"
+        v_pass "claude settings" "attribution off, status line, notification hooks and .env denials set"
     else
         v_fail "claude settings" "$settings has changed; the repo version is parked under ~/.local/state/rice/pending after phase 62"
     fi
@@ -696,6 +756,394 @@ check_claude_neovim() {
     fi
 }
 
+# True when version $1 is at least version $2.
+version_at_least() {
+    printf '%s\n%s\n' "$2" "$1" | sort -V -C
+}
+
+# ------------------------------------------------------------ desktop extras --
+
+# The xkb options phase 30 renders for a LAYOUT_SWITCH value, or failure for a
+# value it does not know.
+xkb_options_for() {
+    case "$1" in
+        alt_shift)       printf 'rice:alt_shift_release,compose:ralt' ;;
+        alt_shift_press) printf 'grp:lalt_lshift_toggle,compose:ralt' ;;
+        caps)            printf 'grp:caps_toggle,compose:ralt' ;;
+        none)            printf 'compose:ralt' ;;
+        *)               return 1 ;;
+    esac
+}
+
+check_keyboard() {
+    local notify="$RICE_USER_BIN/layout-notify" mode="${LAYOUT_SWITCH:-alt_shift}" options=""
+    local xkb_dir="${XDG_CONFIG_HOME:-$HOME/.config}/xkb"
+    if [[ -x "$notify" ]]; then
+        v_pass "layout-notify" "$notify"
+    else
+        v_fail "layout-notify" "$notify is missing, so a layout switch raises no notification; re-run phase 30-theme"
+    fi
+
+    if ! options="$(xkb_options_for "$mode")"; then
+        v_fail "LAYOUT_SWITCH" "$mode is not alt_shift, alt_shift_press, caps or none; phase 30 treats it as alt_shift"
+        mode=alt_shift
+        options="$(xkb_options_for "$mode")"
+    fi
+    [[ -r "$NIRI_CUSTOM" ]] || return 0
+    if ! grep -qF "layout \"$KEYBOARD_LAYOUTS\"" "$NIRI_CUSTOM" || ! grep -qF "options \"$options\"" "$NIRI_CUSTOM"; then
+        v_fail "layout switch" "$NIRI_CUSTOM does not hold layouts $KEYBOARD_LAYOUTS with options $options; re-run phase 30-theme"
+    elif ! grep -qE '^[[:space:]]*spawn-sh-at-startup .*layout-notify' "$NIRI_CUSTOM"; then
+        v_fail "layout switch" "$NIRI_CUSTOM does not start layout-notify; re-run phase 30-theme"
+    elif [[ "$mode" == alt_shift ]] && { [[ ! -f "$xkb_dir/symbols/rice" ]] \
+            || ! grep -qF 'rice:alt_shift_release' "$xkb_dir/rules/evdev" 2>/dev/null; }; then
+        v_fail "layout switch" "$xkb_dir lacks the rice:alt_shift_release rule or symbols, so niri falls back to US only; re-run phase 30-theme"
+    else
+        v_pass "layout switch" "$KEYBOARD_LAYOUTS, $mode ($options)"
+    fi
+
+    if [[ -z "${NIRI_SOCKET:-}" || ! -S "$NIRI_SOCKET" ]] || ! command -v niri >/dev/null 2>&1; then
+        v_skip "niri keymap" "not inside a niri session"
+        return 0
+    fi
+    local errors="" json="" live="" commas
+    # grep -c reads to the end, so journalctl never meets a closed pipe.
+    errors="$(bounded 30 journalctl --user -b -o cat --no-pager 2>/dev/null \
+        | grep -cF 'error loading the configured xkb keymap' || true)"
+    if [[ "$errors" =~ ^[0-9]+$ ]] && (( errors > 0 )); then
+        v_fail "niri keymap" "niri could not build the keymap and fell back to US only; set LAYOUT_SWITCH=alt_shift_press in config.local.env and re-run phase 30-theme"
+    else
+        v_pass "niri keymap" "no keymap errors in this boot's journal"
+    fi
+    command -v jq >/dev/null 2>&1 || return 0
+    json="$(bounded 10 niri msg --json keyboard-layouts </dev/null 2>/dev/null || true)"
+    live="$(jq -r '.names | length' <<<"$json" 2>/dev/null || true)"
+    commas="${KEYBOARD_LAYOUTS//[^,]/}"
+    if [[ "$live" == "$(( ${#commas} + 1 ))" ]]; then
+        v_pass "niri layouts" "$live layouts live: $(jq -r '.names | join(", ")' <<<"$json" 2>/dev/null || true)"
+    else
+        v_fail "niri layouts" "niri reports ${live:-no} layouts, KEYBOARD_LAYOUTS=$KEYBOARD_LAYOUTS asks for $(( ${#commas} + 1 ))"
+    fi
+}
+
+# hakuspace moves ~/.local/bin aside on update, so the helper lives in the rice bin.
+check_accent_helper() {
+    local helper="$RICE_USER_BIN/accent" legacy="$HOME/.local/bin/accent"
+    if [[ ! -x "$helper" ]]; then
+        v_fail "accent helper" "$helper is missing; re-run phase 30-theme"
+    elif [[ -f "$legacy" ]] && grep -qxF -- "$ACCENT_HELPER_TAG" "$legacy"; then
+        v_fail "accent helper" "an older copy in ~/.local/bin shadows $helper in bash; re-run phase 30-theme"
+    else
+        v_pass "accent helper" "$helper"
+    fi
+}
+
+# The COPR also builds kitty, cliphist and waybar, which must keep coming from
+# Fedora, so its repo file has to carry the exact includepkgs line phase 20 writes.
+check_hypr_copr() {
+    local files=() file unrestricted=""
+    mapfile -t files < <(compgen -G '/etc/yum.repos.d/_copr*lionheartp*Hyprland*.repo' || true)
+    if (( ${#files[@]} == 0 )); then
+        v_fail "hypr COPR" "lionheartp/Hyprland is not enabled, so hypridle and hyprlock get no updates; re-run phase 20-hakuspace"
+        return 0
+    fi
+    for file in "${files[@]}"; do
+        grep -qxF "$HYPR_COPR_INCLUDEPKGS" "$file" || unrestricted+="${unrestricted:+ }${file##*/}"
+    done
+    if [[ -n "$unrestricted" ]]; then
+        v_fail "hypr COPR" "$unrestricted is not restricted to the hypr packages; re-run phase 20-hakuspace"
+    elif compgen -G '/etc/yum.repos.d/_copr*eli-xciv*hyprland*.repo' >/dev/null 2>&1; then
+        v_fail "hypr COPR" "the retired eli-xciv/hyprland COPR is still enabled; re-run phase 20-hakuspace"
+    else
+        v_pass "hypr COPR" "lionheartp/Hyprland, restricted by includepkgs"
+    fi
+
+    local out="" name vendor copr="" seen=0
+    out="$(rpm -q --qf '%{NAME}\t%{VENDOR}\n' kitty cliphist 2>/dev/null || true)"
+    while IFS=$'\t' read -r name vendor; do
+        [[ -n "$vendor" ]] || continue
+        seen=1
+        if [[ "$(lc "$vendor")" == *copr* ]]; then
+            copr+="${copr:+, }$name ($vendor)"
+        fi
+    done <<<"$out"
+    if (( ! seen )); then
+        v_skip "Fedora builds" "neither kitty nor cliphist is installed"
+    elif [[ -n "$copr" ]]; then
+        v_fail "Fedora builds" "COPR builds replaced Fedora's: $copr"
+    else
+        v_pass "Fedora builds" "kitty and cliphist come from Fedora"
+    fi
+}
+
+# hypridle 0.1.8 is the first release that honours condition_cmd, which both
+# upstream's idle_inhibit.sh and rice's battery-only listener rely on.
+check_hypridle() {
+    local out="" version=""
+    if ! command -v hypridle >/dev/null 2>&1; then
+        v_fail "hypridle" "not installed, so the session never dims, locks or suspends on idle; re-run phase 20-hakuspace"
+        return 0
+    fi
+    out="$(bounded 10 hypridle -V </dev/null 2>&1 || true)"
+    if [[ "$out" =~ ([0-9]+(\.[0-9]+)+) ]]; then
+        version="${BASH_REMATCH[1]}"
+    fi
+    if [[ -z "$version" ]]; then
+        v_fail "hypridle" "could not read a version from hypridle -V"
+    elif version_at_least "$version" "$HYPRIDLE_MIN_VERSION"; then
+        v_pass "hypridle" "$version"
+    else
+        v_fail "hypridle" "$version is older than $HYPRIDLE_MIN_VERSION and ignores condition_cmd; re-run phase 20-hakuspace"
+    fi
+}
+
+# tuned-ppd ships no powerprofilesctl, and hakuspace's swaync power buttons call it.
+check_powerprofilesctl() {
+    local shim="$RICE_USER_BIN/powerprofilesctl" out=""
+    if [[ -x /usr/bin/powerprofilesctl ]]; then
+        v_pass "powerprofilesctl" "/usr/bin/powerprofilesctl"
+        return 0
+    fi
+    if [[ ! -x "$shim" ]]; then
+        v_fail "powerprofilesctl" "no client, so the swaync power buttons do nothing; re-run phase 20-hakuspace"
+        return 0
+    fi
+    out="$(bounded 10 "$shim" get </dev/null 2>/dev/null || true)"
+    case "$out" in
+        power-saver|balanced|performance) v_pass "powerprofilesctl" "rice stand-in reports $out" ;;
+        *) v_fail "powerprofilesctl" "$shim get printed '${out:-nothing}' instead of a profile" ;;
+    esac
+}
+
+# ------------------------------------------------------------------- power --
+
+# Fedora 44 installs tuned-ppd, a system upgraded from Fedora 40 or earlier keeps
+# power-profiles-daemon, and both serve the same D-Bus interface.
+check_power_daemon() {
+    local provider="" units=() unit down="" profile="" tlp
+    if ! provider="$(rpm -q --qf '%{NAME}\n' --whatprovides ppd-service 2>/dev/null)"; then
+        provider=""
+    fi
+    provider="${provider%%$'\n'*}"
+    case "$provider" in
+        tuned-ppd)             units=(tuned.service tuned-ppd.service) ;;
+        power-profiles-daemon) units=(power-profiles-daemon.service) ;;
+        "")
+            v_fail "power daemon" "nothing provides ppd-service, so power profiles cannot switch; re-run phase 50-thinkpad"
+            return 0
+            ;;
+    esac
+    for unit in "${units[@]}"; do
+        systemctl is-active --quiet "$unit" 2>/dev/null || down+="${down:+ }$unit"
+    done
+    for tlp in tlp tlp-rdw; do
+        pkg_installed "$tlp" && down+="${down:+ }($tlp installed, which conflicts)"
+    done
+    if [[ -n "$down" ]]; then
+        v_fail "power daemon" "$provider, but not running: $down"
+    else
+        v_pass "power daemon" "$provider${units[*]:+, ${units[*]} active}"
+    fi
+
+    if ! command -v busctl >/dev/null 2>&1; then
+        v_skip "power profile" "busctl is not available"
+        return 0
+    fi
+    profile="$(bounded 10 busctl get-property org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles \
+        org.freedesktop.UPower.PowerProfiles ActiveProfile </dev/null 2>/dev/null || true)"
+    profile="${profile#s \"}"
+    profile="${profile%\"}"
+    if [[ -n "$profile" ]]; then
+        v_pass "power profile" "$profile"
+    else
+        v_fail "power profile" "no daemon answers org.freedesktop.UPower.PowerProfiles on the system bus"
+    fi
+}
+
+session_bus_available() {
+    [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" || ( -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/bus" ) ]]
+}
+
+# SUSPEND_ON_AC=false means: on AC idle never suspends, the lid only locks and the
+# login screen stays awake, while battery keeps Fedora's defaults.
+check_sleep_policy() {
+    local policy="${SUSPEND_ON_AC:-false}"
+    if [[ "$policy" != true && "$policy" != false ]]; then
+        v_fail "sleep policy" "SUSPEND_ON_AC must be true or false, found $policy; phase 50 leaves the policy alone"
+        return 0
+    fi
+
+    local cfg="" live=""
+    if [[ "$policy" == true ]]; then
+        if [[ -e "$LOGIND_LID_DROPIN" ]]; then
+            v_fail "lid on AC" "$LOGIND_LID_DROPIN still makes the lid lock although SUSPEND_ON_AC=true; re-run phase 50-thinkpad"
+        else
+            v_pass "lid on AC" "suspends, as on battery (SUSPEND_ON_AC=true)"
+        fi
+    elif ! command -v systemd-analyze >/dev/null 2>&1; then
+        v_skip "lid on AC" "systemd-analyze is not available"
+    else
+        cfg="$(bounded 10 systemd-analyze cat-config systemd/logind.conf 2>/dev/null || true)"
+        live="$(bounded 10 busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+            org.freedesktop.login1.Manager HandleLidSwitchExternalPower </dev/null 2>/dev/null || true)"
+        if ! grep -qx 'HandleLidSwitchExternalPower=lock' <<<"$cfg"; then
+            v_fail "lid on AC" "no HandleLidSwitchExternalPower=lock in the logind config, so the lid suspends on AC; re-run phase 50-thinkpad"
+        elif [[ -n "$live" && "$live" != 's "lock"' ]]; then
+            v_fail "lid on AC" "configured to lock, but logind reports ${live#s }; run: sudo systemctl reload systemd-logind.service"
+        else
+            v_pass "lid on AC" "locks; battery keeps HandleLidSwitch=suspend"
+        fi
+    fi
+
+    local profile_dir="" value=""
+    if [[ ! -d "$GDM_DCONF_DIR" ]]; then
+        v_skip "login screen on AC" "GDM is not installed"
+    elif [[ "$policy" == true ]]; then
+        if [[ -e "$GDM_POWER_KEYFILE" ]]; then
+            v_fail "login screen on AC" "$GDM_POWER_KEYFILE is still installed although SUSPEND_ON_AC=true; re-run phase 50-thinkpad"
+        else
+            v_pass "login screen on AC" "suspends after GNOME's idle time (SUSPEND_ON_AC=true)"
+        fi
+    elif [[ ! -f "$GDM_POWER_KEYFILE" ]]; then
+        v_fail "login screen on AC" "$GDM_POWER_KEYFILE is missing, so the login screen suspends after 15 minutes; re-run phase 50-thinkpad"
+    elif ! command -v dconf >/dev/null 2>&1; then
+        v_skip "login screen on AC" "dconf is not installed, so the compiled database cannot be read"
+    else
+        # A profile holding only the gdm system database. DCONF_PROFILE=gdm would
+        # also open a user database, whose value masks the one being checked.
+        profile_dir="$(mktemp -d)"
+        printf 'system-db:gdm\n' > "$profile_dir/gdm"
+        value="$(bounded 10 env DCONF_PROFILE="$profile_dir/gdm" \
+            dconf read /org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type </dev/null 2>/dev/null || true)"
+        rm -rf -- "$profile_dir"
+        if [[ "$value" == "'nothing'" ]]; then
+            v_pass "login screen on AC" "never suspends from idle"
+        else
+            v_fail "login screen on AC" "the compiled gdm database reads ${value:-unset}; run: sudo dconf update"
+        fi
+    fi
+
+    if [[ "$policy" == true ]]; then
+        :
+    elif ! command -v gsettings >/dev/null 2>&1; then
+        v_skip "GNOME session on AC" "gsettings is not installed"
+    elif ! session_bus_available; then
+        v_skip "GNOME session on AC" "no session bus here; run this from a desktop session"
+    else
+        value="$(bounded 10 gsettings get "$POWER_SCHEMA" sleep-inactive-ac-type </dev/null 2>/dev/null || true)"
+        if [[ "$value" == "'nothing'" ]]; then
+            v_pass "GNOME session on AC" "never suspends from idle"
+        elif [[ -z "$value" ]]; then
+            v_skip "GNOME session on AC" "schema $POWER_SCHEMA is not installed"
+        else
+            v_fail "GNOME session on AC" "sleep-inactive-ac-type is $value; re-run phase 50-thinkpad"
+        fi
+    fi
+
+    # shellcheck disable=SC2016  # $timeout_suspend is hyprlang's variable, matched literally
+    local suspend_off_re='^[[:space:]]*[$]timeout_suspend[[:space:]]*=[[:space:]]*-1' f others=""
+    for f in "$HAKUCFG_DIR"/hypridle.con*; do
+        [[ -e "$f" && "$f" != "$HYPRIDLE_OVERRIDE" ]] && others+="${others:+ }${f##*/}"
+    done
+    if [[ ! -f "$HYPRIDLE_OVERRIDE" ]]; then
+        v_fail "hypridle override" "$HYPRIDLE_OVERRIDE is missing, so upstream's five-minute suspend applies on AC; re-run phase 50-thinkpad"
+    elif [[ -n "$others" ]]; then
+        v_fail "hypridle override" "hypridle also parses $others in $HAKUCFG_DIR, which can bring a suspend back; move them out"
+    elif [[ "$policy" == false ]] && ! { grep -qE "$suspend_off_re" "$HYPRIDLE_OVERRIDE" \
+            && grep -qE '^[^#]*systemd-ac-power' "$HYPRIDLE_OVERRIDE"; }; then
+        v_fail "hypridle override" "$HYPRIDLE_OVERRIDE lacks the battery-only suspend listener; compare it with ~/.local/state/rice/pending/hakucfg/hypridle.conf"
+    elif [[ "$policy" == true ]] && grep -qE '^[^#]*systemd-ac-power' "$HYPRIDLE_OVERRIDE"; then
+        v_fail "hypridle override" "$HYPRIDLE_OVERRIDE still skips suspend on AC although SUSPEND_ON_AC=true; re-run phase 50-thinkpad"
+    elif [[ "$policy" == false ]]; then
+        v_pass "hypridle override" "suspends after an hour idle, on battery only"
+    else
+        v_pass "hypridle override" "suspends after an hour idle"
+    fi
+}
+
+# The swap file is activated by a systemd unit rather than /etc/fstab, and has no
+# priority of its own, so zram at 100 is used first.
+check_swap() {
+    if [[ "${ENABLE_SWAPFILE:-true}" != true ]]; then
+        v_skip "swap file" "ENABLE_SWAPFILE is not true"
+        return 0
+    fi
+    if ! command -v swapon >/dev/null 2>&1; then
+        v_skip "swap file" "swapon is not available"
+        return 0
+    fi
+    local shown="" name prio file_prio="" zram_prio="" state=""
+    shown="$(swapon --show=NAME,PRIO --noheadings --raw 2>/dev/null || true)"
+    while read -r name prio; do
+        [[ "$prio" =~ ^-?[0-9]+$ ]] || continue
+        [[ "$name" == "$SWAP_FILE" ]] && file_prio="$prio"
+        [[ "$name" == /dev/zram* ]] && zram_prio="$prio"
+    done <<<"$shown"
+    state="$(systemctl is-enabled "$SWAP_UNIT" 2>/dev/null || true)"
+
+    if [[ -z "$file_prio" ]]; then
+        v_fail "swap file" "$SWAP_FILE is not active; re-run phase 50-thinkpad"
+        return 0
+    elif grep -qE "^[[:space:]]*${SWAP_FILE}[[:space:]]" /etc/fstab 2>/dev/null; then
+        v_pass "swap file" "active through an /etc/fstab line an earlier run wrote"
+    elif [[ "$state" != enabled ]]; then
+        v_fail "swap file" "active, but $SWAP_UNIT is ${state:-not installed}, so it is gone after a reboot; re-run phase 50-thinkpad"
+    else
+        v_pass "swap file" "$SWAP_UNIT enabled, priority $file_prio"
+    fi
+    if [[ -z "$zram_prio" ]]; then
+        v_skip "swap order" "no zram device is active"
+    elif (( file_prio < zram_prio )); then
+        v_pass "swap order" "zram ($zram_prio) before the file ($file_prio)"
+    else
+        v_fail "swap order" "the file ($file_prio) outranks zram ($zram_prio), so compressed RAM is not used first"
+    fi
+}
+
+# Both trims are off by default. A stamp records what rice disabled, so a stamp
+# left while the flag is false means the re-enable has not happened yet.
+check_trim() {
+    local label="$1" flag_name="$2" unit="$3" flag state
+    flag="${!flag_name:-false}"
+    state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    if [[ -z "$state" || "$state" == not-found ]]; then
+        v_skip "$label" "$unit is not installed"
+        return 0
+    fi
+    case "$flag" in
+        true)
+            if [[ "$state" == enabled ]]; then
+                v_skip "$label" "$flag_name=true, but $unit is enabled; phase 50 keeps it while a modem may exist"
+            else
+                v_pass "$label" "$unit is $state ($flag_name=true)"
+            fi
+            ;;
+        false)
+            if [[ -f "$DISABLED_BY_RICE_DIR/$unit" ]]; then
+                v_fail "$label" "rice disabled $unit and $flag_name is false now; re-run phase 50-thinkpad to re-enable it"
+            else
+                v_pass "$label" "$unit is $state, left alone ($flag_name=false)"
+            fi
+            ;;
+        *)
+            v_fail "$label" "$flag_name must be true or false, found $flag"
+            ;;
+    esac
+}
+
+# Phase 40's fish snippets moved to the vendor directory; a copy of the same name
+# in ~/.config/fish/conf.d would silently replace it.
+check_dev_fish() {
+    local name left=""
+    for name in rice-mise.fish rice-jetbrains.fish; do
+        [[ -e "$HOME/.config/fish/conf.d/$name" ]] && left+="${left:+ }$name"
+    done
+    if [[ -n "$left" ]]; then
+        v_fail "dev fish snippets" "$HOME/.config/fish/conf.d still holds $left, which shadow the vendor copies; re-run phase 40-dev"
+    else
+        v_pass "dev fish snippets" "$FISH_VENDOR_DIR/vendor_conf.d"
+    fi
+}
+
 log_step "verifying the desktop"
 
 check_niri_session
@@ -705,11 +1153,25 @@ check_xwayland
 check_va_driver
 check_desktop_tools
 check_portal
+check_keyboard
+check_accent_helper
+check_hypr_copr
+check_hypridle
+check_powerprofilesctl
 check_docker
 check_kubectl
 check_shell
-check_battery
+check_dev_fish
 check_fonts
+
+log_step "verifying power and memory"
+
+check_power_daemon
+check_sleep_policy
+check_battery
+check_swap
+check_trim "ModemManager" OPT_DISABLE_MODEMMANAGER ModemManager.service
+check_trim "wait-online" OPT_DISABLE_NM_WAIT_ONLINE NetworkManager-wait-online.service
 
 log_step "verifying the terminal and editor"
 
@@ -724,9 +1186,11 @@ fi
 check_kitty_layer
 check_fish_layer
 check_tmux_layer
+check_tmux_newline
 check_git_layer
 check_lazygit_bat
 check_rice_bin
+check_rice_command
 if enabled ENABLE_CLAUDE_CODE; then
     check_claude_cli
     check_claude_config
@@ -744,7 +1208,13 @@ cat <<'MANUAL'
   itself is broken:
 
   - Share a window in a real Meet, Zoom or Teams call.
-  - Close the lid, reopen it, confirm resume and that Wi-Fi reconnects.
+  - On battery with no external display, close the lid: the laptop suspends.
+    Reopen it and confirm it resumes and Wi-Fi reconnects.
+  - On AC with no external display, close the lid: the session locks to hyprlock
+    and nothing suspends. With a display connected the lid is ignored either way.
+  - On AC, leave the GDM login screen idle for more than 15 minutes: it stays awake.
+  - In Niri, press and release Alt+Shift on its own: the layout switches and one
+    notification names it. Mod+Shift+Alt+Left must move a column without switching.
   - Run fprintd-enroll and then lock the screen to test the fingerprint login.
   - Open a JetBrains IDE and confirm it draws through xwayland-satellite.
   - Run claude once in a terminal and sign in.

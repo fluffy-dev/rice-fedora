@@ -12,6 +12,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
 FILES=()
 while IFS= read -r f; do FILES+=("$f"); done < <(find . -name '*.sh' -not -path './.git/*' | sort)
 FILES+=(./config.env)
+FILES+=(./rice)
 
 fail=0
 

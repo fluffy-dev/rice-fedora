@@ -5,7 +5,19 @@
 # gets the key instead: Neovim's own maps move between its splits and call tmux
 # select-pane at the edge. The check looks at every process on the pane's tty, not
 # just the foreground one, so Neovim started by git commit or kubectl edit counts.
-# A plain shell loses C-l to this, so prefix C-l sends it.
+# Any other pane, a shell or Claude Code, loses those keys to navigation, so prefix
+# C-h, prefix C-j, prefix C-k and prefix C-l send them through. prefix H J K L
+# resize panes, which takes prefix L from last-session; that is prefix BSpace here.
+#
+# Newlines in Claude Code: Shift+Enter works here only inside kitty. kitty sends a
+# bare Shift+Enter as plain Enter and ignores the extended-keys request tmux makes,
+# so its kitty.conf maps shift+enter to CSI 13;2u in any window whose title starts
+# with "tmux ", which set-titles-string below provides. tmux decodes that as S-Enter
+# and, with extended-keys on, forwards it to panes that ask for extended keys, as
+# Claude Code does. Anywhere that chain is missing, such as another terminal or a
+# tmux reached over ssh, Shift+Enter submits like Enter. Use prefix C-j there, which
+# delivers Claude Code's own newline key, or end the line with a backslash and press
+# Enter.
 
 set -g default-terminal "tmux-256color"
 set -as terminal-features ",xterm-kitty:RGB:extkeys:focus:hyperlinks:usstyle:clipboard:strikethrough:sync:title"
@@ -29,7 +41,7 @@ set -g status-keys emacs
 set -g detach-on-destroy off
 set -g display-time 2000
 set -g set-titles on
-set -g set-titles-string "#S: #W"
+set -g set-titles-string "tmux #S: #W"
 setw -g aggressive-resize on
 
 set -g prefix C-Space
@@ -45,6 +57,7 @@ bind -r H resize-pane -L 5
 bind -r J resize-pane -D 3
 bind -r K resize-pane -U 3
 bind -r L resize-pane -R 5
+bind BSpace switch-client -l
 bind r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
 
 # With set-clipboard on, every copy also reaches the system clipboard over OSC 52.
@@ -61,6 +74,9 @@ bind -T copy-mode-vi C-h select-pane -L
 bind -T copy-mode-vi C-j select-pane -D
 bind -T copy-mode-vi C-k select-pane -U
 bind -T copy-mode-vi C-l select-pane -R
+bind C-h send-keys C-h
+bind C-j send-keys C-j
+bind C-k send-keys C-k
 bind C-l send-keys C-l
 
 # Claude Code in a side split, rooted at the pane's git repository or, outside one,

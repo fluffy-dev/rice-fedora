@@ -11,8 +11,29 @@
 //
 // It replaces the stub hakuspace ships, whose focus-ring block is `off`.
 //
-// @@OUTPUT_NAME@@ and @@DISPLAY_SCALE@@ are substituted by phases/30-theme.sh,
-// so this file is a template and is not valid KDL until it is installed.
+// phases/30-theme.sh fills in every name written between double at-signs: the
+// panel's output name and scale, the xkb layouts and options, and the path of
+// the layout watcher. Until then this file is a template, not valid KDL.
+//
+// Keyboard layout switching follows LAYOUT_SWITCH in config.env:
+//   alt_shift        options "rice:alt_shift_release,compose:ralt"
+//   alt_shift_press  options "grp:lalt_lshift_toggle,compose:ralt"
+//   caps             options "grp:caps_toggle,compose:ralt"
+//   none             options "compose:ralt", leaving only Mod+Shift+Space
+//
+// rice:alt_shift_release is not part of xkeyboard-config. The phase seeds it
+// into ~/.config/xkb/rules/evdev and ~/.config/xkb/symbols/rice before this
+// file is installed. It switches on a lone Alt+Shift press and release, so a
+// chord such as Mod+Shift+Alt+Left keeps every modifier and never flips the
+// layout. It relies on lockOnRelease, which exists only in the v2 keymap format.
+// libxkbcommon 1.13 compiles named keymaps as v2, but only a live session
+// proves that niri's keymap gets it. If
+//   journalctl --user -b | grep 'error loading the configured xkb keymap'
+// finds anything, niri has fallen back to its default US-only keymap. The
+// fallback is alt_shift_press, the stock grp:lalt_lshift_toggle. It switches
+// on press, so an Alt+Shift chord also flips the layout and loses one of its
+// modifiers. grp:alt_shift_toggle is no substitute: it also claims Right
+// Alt+Right Shift, which breaks the compose key.
 
 environment {
     // The shipped environment.kdl asks for iHD, the Intel media driver. This
@@ -48,6 +69,12 @@ environment {
 // niri creates the sockets, exports DISPLAY and manages the process lifecycle, so
 // a manual spawn would fight it for the socket rather than help.
 
+// Announces every keyboard layout switch, whether it came from xkb, from the
+// Mod+Shift+Space bind or from `niri msg action switch-layout`. niri runs
+// startup spawns once rather than on every config reload, and the watcher exits
+// when niri closes its IPC socket, so each session has exactly one.
+spawn-sh-at-startup "exec \"@@LAYOUT_NOTIFY@@\" @@XKB_LAYOUT@@"
+
 output "@@OUTPUT_NAME@@" {
     scale @@DISPLAY_SCALE@@
 }
@@ -59,19 +86,19 @@ input {
     focus-follows-mouse max-scroll-amount="0%"
 
     keyboard {
+        // Filled in from KEYBOARD_LAYOUTS and LAYOUT_SWITCH, as the header
+        // describes. Neither line may go: an empty xkb section makes niri read
+        // the layouts and options from org.freedesktop.locale1 instead. Right
+        // Alt composes in every mode, which is how to reach the accented and
+        // typographic characters a us layout has no key for.
         xkb {
-            layout "us,ru"
-            // Caps Lock is left as Caps Lock. As grp:caps_toggle it moved the
-            // whole keyboard to Cyrillic on a key that is struck by accident
-            // more often than on purpose, and nothing on this desktop says
-            // which layout is live: none of the nine waybar modes hakuspace
-            // ships carries a language module, and a waybar config here would
-            // be overwritten on the next upstream update anyway. The switch is
-            // a deliberate chord in binds below, and it announces where it
-            // landed. Right Alt composes, which is how to reach the accented
-            // and typographic characters a us layout has no key for.
-            options "compose:ralt"
+            layout "@@XKB_LAYOUT@@"
+            options "@@XKB_OPTIONS@@"
         }
+
+        // track-layout stays at its default, global. Set to "window", niri
+        // restores each window's own layout on every focus change, and each of
+        // those restores would raise the layout notification with no key pressed.
 
         // Repeat fast enough that holding a key to move a cursor across a line
         // of code is quicker than reaching for the arrow cluster.
@@ -182,16 +209,13 @@ binds {
     Mod+Ctrl+Tab  hotkey-overlay-title="Haku Menu" { spawn-sh "$HOME/.local/bin/hakumenu.sh"; }
 
     // --- keyboard layout ----------------------------------------------------
-    // The us/ru switch, moved off Caps Lock. niri's own default config offers
-    // this pair on Mod+Space and Mod+Shift+Space; Mod+Space is the launcher
-    // here, and with exactly two layouts next and prev are the same move, so
-    // one bind covers it.
-    //
-    // It goes through niri msg rather than the native switch-layout action
-    // because a bind runs exactly one action, and with no language module in
-    // any waybar mode this toast is the only thing that says which layout is
-    // now live. A missing jq or notify-send costs the toast, not the switch.
-    Mod+Shift+Space hotkey-overlay-title="Switch Keyboard Layout" { spawn-sh "niri msg action switch-layout next && notify-send -a niri -t 1500 'Keyboard layout' \"$(niri msg --json keyboard-layouts | jq -r '.names[.current_idx]')\""; }
+    // A switch that works in every LAYOUT_SWITCH mode, none included. niri's
+    // own default config offers this pair on Mod+Space and Mod+Shift+Space;
+    // Mod+Space is the launcher here, and with two layouts next and prev are
+    // the same move, so one bind covers it. It announces nothing itself:
+    // layout-notify, started near the top of this file, raises the notification
+    // for every switch however it happened, so a notify-send here would show two.
+    Mod+Shift+Space hotkey-overlay-title="Switch Keyboard Layout" { switch-layout "next"; }
 
     // Mod+H and Mod+L are taken upstream, so only the vertical half of hjkl is
     // available for moving around inside a column.

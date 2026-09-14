@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# rice: the menu for this Fedora + niri desktop bootstrap, and its command line.
+#
+# With no arguments on a terminal it opens the menu: Install, Update, Settings,
+# Health and Maintain. Any argument, or no terminal, runs the same non-interactive
+# bootstrap as bootstrap.sh (--only, --skip, --dry-run, --list, --help). It is
+# symlinked onto PATH, so it resolves its own real path to find the checkout.
+set -euo pipefail
+
+if (( BASH_VERSINFO[0] < 4 )); then
+    printf 'rice needs bash 4 or newer; this is %s\n' "$BASH_VERSION" >&2
+    exit 1
+fi
+
+RICE_INVOKED="${BASH_SOURCE[0]}"
+RICE_ROOT="$(cd -- "$(dirname -- "$(readlink -f -- "$RICE_INVOKED")")" && pwd -P)"
+export RICE_ROOT
+
+# shellcheck source=cli/entry.sh
+. "$RICE_ROOT/cli/entry.sh"
+rice_entry "$@"

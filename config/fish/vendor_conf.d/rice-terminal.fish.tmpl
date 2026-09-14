@@ -1,13 +1,12 @@
 # Rice terminal layer for fish: editor and pagers, fzf in the palette, and
-# abbreviations for containers, Kubernetes, git, Node, Python and Claude Code.
+# abbreviations for containers, Kubernetes, git, Node and Python.
 #
 # Installed in ~/.local/share/fish/vendor_conf.d because a hakuspace update moves
 # ~/.config/fish aside and restores only its own files. Fish reads this before
 # hakuspace's config.fish, which would silently replace any abbreviation sharing a
 # name with one of its own, so none of the names here do. None shadows a command
-# Fedora ships either.
-
-fish_add_path --global --path --move ~/.local/share/rice/bin
+# Fedora ships either. The rice bin directory reaches PATH through rice-path.fish,
+# and the Claude Code abbreviations live in rice-claude.fish.
 
 if command -q nvim
     set -gx EDITOR nvim
@@ -35,10 +34,6 @@ if status is-interactive
 
     abbr --add v nvim
     abbr --add t 'tmux new-session -A -s main'
-
-    abbr --add cl claude
-    abbr --add clco 'claude --continue'
-    abbr --add clre 'claude --resume'
 
     abbr --add dk docker
     abbr --add dps 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"'

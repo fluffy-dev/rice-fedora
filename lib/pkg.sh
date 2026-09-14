@@ -141,10 +141,13 @@ rpm_key_import() {
     return 0
 }
 
-# True when the named systemd unit exists on this system.
+# True when the named systemd unit exists on this system. The listing is captured
+# rather than piped into grep -q: grep exits at its first match, systemctl takes a
+# SIGPIPE, and under pipefail the pipeline reports 141 for a unit that does exist.
 unit_exists() {
-    systemctl list-unit-files "$1" >/dev/null 2>&1 && \
-        systemctl list-unit-files "$1" 2>/dev/null | grep -q "$1"
+    local listing
+    listing="$(systemctl list-unit-files --no-legend "$1" 2>/dev/null || true)"
+    [[ "$listing" == *"$1"* ]]
 }
 
 service_enable() {

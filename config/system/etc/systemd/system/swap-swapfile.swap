@@ -1,0 +1,13 @@
+# Disk swap below zram, activated at boot instead of through /etc/fstab. systemd
+# requires a swap unit to be named after the path it activates:
+#   systemd-escape --path --suffix=swap /swap/swapfile
+# No priority is set, so the kernel ranks it below zram's 100 and compressed RAM
+# is still used first. Installed by rice phase 50-thinkpad.
+[Unit]
+Description=Swap file at /swap/swapfile
+
+[Swap]
+What=/swap/swapfile
+
+[Install]
+WantedBy=swap.target

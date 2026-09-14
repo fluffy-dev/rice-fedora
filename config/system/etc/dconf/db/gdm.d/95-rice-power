@@ -1,0 +1,6 @@
+# The GDM login screen never suspends from idle while on AC power. The battery
+# keys keep GNOME's defaults. Installed by rice phase 50-thinkpad when
+# SUSPEND_ON_AC=false and compiled into /etc/dconf/db/gdm by dconf update.
+[org/gnome/settings-daemon/plugins/power]
+sleep-inactive-ac-type='nothing'
+sleep-inactive-ac-timeout=0

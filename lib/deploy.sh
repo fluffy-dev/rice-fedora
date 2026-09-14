@@ -30,7 +30,7 @@ _seed_park() {
     local src="$1" dst="$2" rel pending
     rel="${dst#"$HOME"/}"
     pending="$RICE_PENDING_DIR/$rel"
-    if [[ -f "$pending" ]] && cmp -s "$src" "$pending"; then
+    if same_file "$src" "$pending"; then
         log_skip "kept your edited $dst (newer version already parked)"
         return 0
     fi
@@ -68,7 +68,7 @@ seed_file() {
         local ours=0
         if [[ -n "$recorded" && "$cur_sum" == "$recorded" ]]; then
             ours=1
-        elif [[ -n "$replaceable" && -f "$replaceable" ]] && cmp -s "$dst" "$replaceable"; then
+        elif [[ -n "$replaceable" ]] && same_file "$dst" "$replaceable"; then
             ours=1
         fi
         if (( ours == 0 )); then
@@ -118,6 +118,9 @@ render_template() {
 seed_tree() {
     local src_dir="$1" dst_dir="$2" stage rel src dst mode
     [[ -d "$src_dir" ]] || die "seed_tree: missing directory $src_dir"
+    # The file list arrives through process substitution, whose failure is invisible:
+    # without find the loop reads nothing and the tree silently deploys as empty.
+    command -v find >/dev/null 2>&1 || die "seed_tree: find is required"
     stage="$(mktemp -d)"
 
     while IFS= read -r -d '' src; do
@@ -159,4 +162,50 @@ rice_user_bin_ensure() {
         "$RICE_USER_BIN" > "$stage/rice-path.fish"
     seed_file "$stage/rice-path.fish" "$HOME/.local/share/fish/vendor_conf.d/rice-path.fish"
     rm -rf "$stage"
+}
+
+# Where the repo's version of DST is parked, whether or not one is there.
+seed_pending_path() {
+    printf '%s/%s' "$RICE_PENDING_DIR" "${1#"$HOME"/}"
+}
+
+RICE_SEED_REPLACED_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/rice/replaced"
+
+# Replace DST with the version parked for it and record that content as ours, so
+# later runs update the file in place again. The file being replaced is kept under
+# the state directory rather than beside DST, where a config glob could load it.
+seed_pending_accept() {
+    local dst="$1" pending backup=""
+    pending="$(seed_pending_path "$dst")"
+    [[ -f "$pending" ]] || die "seed_pending_accept: nothing is parked for $dst"
+    if is_dry_run; then
+        printf '  %s[dry-run]%s replace %s with %s and record it as deployed\n' "$C_DIM" "$C_RESET" "$dst" "$pending"
+        return 0
+    fi
+    if [[ -f "$dst" ]]; then
+        backup="$RICE_SEED_REPLACED_DIR/${dst#"$HOME"/}.$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$(dirname "$backup")"
+        cp -p -- "$dst" "$backup"
+        cp -- "$pending" "$dst"
+    else
+        mkdir -p "$(dirname "$dst")"
+        install -m 0644 "$pending" "$dst"
+    fi
+    _seed_record "$(_seed_stamp_path "$dst")" "$(_rice_sha256 "$dst")"
+    rm -f -- "$pending"
+    find "$RICE_PENDING_DIR" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    log_ok "deployed the repo version of $dst"
+    [[ -n "$backup" ]] && log_info "your version is kept at $backup"
+    return 0
+}
+
+# Drop the parked version of DST and keep the hand-edited file as it is. A later
+# run parks the repo's version again if it still differs.
+seed_pending_discard() {
+    local dst="$1" pending
+    pending="$(seed_pending_path "$dst")"
+    [[ -f "$pending" ]] || return 0
+    run rm -f -- "$pending"
+    is_dry_run || find "$RICE_PENDING_DIR" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    log_ok "kept your $dst and removed the parked copy"
 }

@@ -6,6 +6,9 @@
 # gen_style.sh, which the hakuspace theme menu drives. Remote control and
 # listen_on stay untouched because apply_style.sh reloads every kitty through the
 # /tmp/kitty-<pid> sockets.
+#
+# Phase 61 appends scrollback-nvim.conf when nvim is installed, leaving kitty's own
+# less pager otherwise, and claude.conf when ENABLE_CLAUDE_CODE is true.
 
 # gen_style.sh paints foreground, color7 and color15 in the accent, which is tiring
 # as body text. The accent lives on in color6, the cursor, borders and active tab.
@@ -68,9 +71,7 @@ modify_font                 cell_height 105%
 undercurl_style             thick-sparse
 disable_ligatures           cursor
 
-# Scrollback opens in Neovim, using kitty's documented recipe for nvim 0.12.
 scrollback_pager_history_size 8
-scrollback_pager nvim --cmd 'set eventignore=FileType' +'nnoremap q ZQ' +'call nvim_open_term(0, {})' +'set nomodified nolist' +'$' -
 
 # dnf updates kitty. Closing a window only asks while a command is running in it.
 update_check_interval       0
@@ -81,7 +82,9 @@ strip_trailing_spaces       smart
 exe_search_path             +~/.local/share/rice/bin
 
 # kitty_mod stays ctrl+shift, so copy and paste keep their defaults. None of these
-# combinations is bound by kitty itself.
+# combinations is bound by kitty itself. The kitty_mod+alt maps are Ctrl+Shift+Alt
+# chords: the rice:alt_shift_release layout option switches only on a lone Alt+Shift,
+# so the letter cancels the switch and all three modifiers arrive intact.
 map kitty_mod+d         launch --location=vsplit --cwd=current
 map kitty_mod+alt+d     launch --location=hsplit --cwd=current
 map kitty_mod+alt+h     neighboring_window left
@@ -95,4 +98,10 @@ map kitty_mod+alt+2     goto_tab 2
 map kitty_mod+alt+3     goto_tab 3
 map kitty_mod+alt+4     goto_tab 4
 map kitty_mod+alt+5     goto_tab 5
-map kitty_mod+alt+c     launch --location=vsplit --cwd=current claude
+
+# kitty sends a bare shift+enter as plain \r and ignores the modifyOtherKeys request
+# tmux makes, so tmux cannot tell it from Enter. tmux titles its window "tmux #S: #W";
+# there, send the CSI u form, which tmux decodes and forwards to panes that ask for
+# extended keys. Everywhere else kitty encodes the key as usual. kitty splits map
+# options like a shell, so the single quotes are what keep the backslash.
+map --when-focus-on 'title:^tmux\s' shift+enter send_text all \x1b[13;2u

@@ -1,0 +1,14 @@
+partial modifier_keys
+xkb_symbols "alt_shift_release" {
+    virtual_modifiers Alt;
+    key <LALT> {
+        type[Group1] = "TWO_LEVEL",
+        symbols[Group1] = [ Alt_L, ISO_Next_Group ],
+        actions[Group1] = [ SetMods(modifiers=Alt), { SetMods(modifiers=Alt), LockGroup(group=+1, lockOnRelease) } ]
+    };
+    key <LFSH> {
+        type[Group1] = "PC_ALT_LEVEL2",
+        symbols[Group1] = [ Shift_L, ISO_Next_Group ],
+        actions[Group1] = [ SetMods(modifiers=Shift), { SetMods(modifiers=Shift), LockGroup(group=+1, lockOnRelease) } ]
+    };
+};

@@ -7,7 +7,9 @@
 # overwrites; fish snippets and functions land in ~/.local/share/fish, which fish
 # reads as a vendor directory; user scripts get ~/.local/share/rice/bin. Files are
 # seeded, so a copy edited by hand is kept and the repo's version parked beside it,
-# and each deployed file is then loaded by its own tool, where one can check it.
+# and each deployed file is then loaded by its own tool, where one can check it. The
+# Claude Code pieces, a kitty map and fish abbreviations, ship only while
+# ENABLE_CLAUDE_CODE is true, and kitty's Neovim scrollback pager only with nvim.
 set -euo pipefail
 RICE_ROOT="${RICE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck source-path=SCRIPTDIR/..
@@ -15,6 +17,9 @@ RICE_ROOT="${RICE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 . "$RICE_ROOT/lib/common.sh"
 
 CONFIG_SRC="$RICE_ROOT/config"
+KITTY_SRC="$CONFIG_SRC/kitty"
+FISH_SRC="$CONFIG_SRC/fish"
+FISH_CLAUDE_SNIPPET="vendor_conf.d/rice-claude.fish"
 
 KITTY_MAIN="$HOME/.config/kitty/kitty.conf"
 KITTY_OVERRIDE="$HOME/hakucfg/config/kitty.conf"
@@ -24,10 +29,6 @@ KITTY_UPSTREAM_STUB="$HAKUSPACE_DIR/src/home/hakucfg/config/kitty.conf"
 
 FISH_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/fish"
 FISH_CONFIG_DIR="$HOME/.config/fish"
-
-# The fish snippet and kitty's exe_search_path name this as ~/.local/share/rice/bin.
-RICE_USER_BIN="$HOME/.local/share/rice/bin"
-ENVIRONMENT_D_DIR="$HOME/.config/environment.d"
 
 TMUX_CONF="$HOME/.config/tmux/tmux.conf"
 GIT_XDG_DIR="$HOME/.config/git"
@@ -63,6 +64,19 @@ stage_template() {
     printf '%s\n' "$out"
 }
 
+# Remove a file this phase deployed from SRC once the feature behind it is off. A copy
+# that no longer matches SRC was edited by hand and stays.
+retire_file() {
+    local src="$1" dst="$2" why="$3"
+    [[ -f "$dst" ]] || return 0
+    if ! same_file "$src" "$dst"; then
+        log_warn "$dst was edited by hand, so it stays although $why"
+        return 0
+    fi
+    run rm -f -- "$dst"
+    is_dry_run || log_ok "removed $dst: $why"
+}
+
 # A deployed file its own tool rejects costs that tool's polish, not the desktop,
 # so it is recorded for the summary rather than aborting the phase.
 config_rejected() {
@@ -88,32 +102,26 @@ setup_packages() {
 
 setup_user_bin() {
     log_step "user script directory"
-    if [[ -d "$RICE_USER_BIN" ]]; then
-        log_skip "exists: $RICE_USER_BIN"
-    else
-        run mkdir -p "$RICE_USER_BIN"
-    fi
-
-    local staged="$STAGE_DIR/60-rice-bin.conf"
-    cat > "$staged" <<CONF
-# The rice user script directory, on PATH for every process the graphical session starts.
-#
-# Kept outside ~/.local/bin, which a hakuspace update moves aside. Read once, when
-# the systemd user manager starts, so a change takes effect at the next login.
-PATH=${RICE_USER_BIN}:\$PATH
-CONF
-    seed_file "$staged" "$ENVIRONMENT_D_DIR/60-rice-bin.conf"
+    rice_user_bin_ensure
 }
 
 # -------------------------------------------------------------------- fish ---
 
 setup_fish() {
     log_step "fish snippet and functions"
-    seed_tree "$CONFIG_SRC/fish" "$FISH_DATA_DIR"
+    local stage="$STAGE_DIR/fish"
+    mkdir -p "$stage"
+    cp -R "$FISH_SRC/." "$stage/"
+    if ! enabled ENABLE_CLAUDE_CODE; then
+        rm -f -- "$stage/$FISH_CLAUDE_SNIPPET"
+        retire_file "$FISH_SRC/$FISH_CLAUDE_SNIPPET" "$FISH_DATA_DIR/$FISH_CLAUDE_SNIPPET" \
+            "ENABLE_CLAUDE_CODE is false"
+    fi
+    seed_tree "$stage" "$FISH_DATA_DIR"
 
     local src rel dst shadow out
     while IFS= read -r -d '' src; do
-        rel="${src#"$CONFIG_SRC/fish/"}"
+        rel="${src#"$stage/"}"
         rel="${rel%.tmpl}"
         dst="$FISH_DATA_DIR/$rel"
 
@@ -138,7 +146,7 @@ setup_fish() {
         else
             config_rejected "$dst" "$out"
         fi
-    done < <(find "$CONFIG_SRC/fish" -type f -print0 | sort -z)
+    done < <(find "$stage" -type f -print0 | sort -z)
 }
 
 # ------------------------------------------------------------------- kitty ---
@@ -146,7 +154,17 @@ setup_fish() {
 setup_kitty() {
     log_step "kitty"
     local staged out rc=0
-    staged="$(stage_template "$CONFIG_SRC/kitty/kitty.conf.tmpl" kitty.conf)"
+    staged="$(stage_template "$KITTY_SRC/kitty.conf.tmpl" kitty.conf)"
+    if command -v nvim >/dev/null 2>&1; then
+        { printf '\n'; cat "$KITTY_SRC/scrollback-nvim.conf"; } >> "$staged"
+    else
+        log_skip "nvim is not installed, so kitty keeps its own less scrollback pager"
+    fi
+    if enabled ENABLE_CLAUDE_CODE; then
+        { printf '\n'; cat "$KITTY_SRC/claude.conf"; } >> "$staged"
+    else
+        log_skip "ENABLE_CLAUDE_CODE is false, leaving out the kitty Claude Code map"
+    fi
     seed_file "$staged" "$KITTY_OVERRIDE" 0644 "$KITTY_UPSTREAM_STUB"
 
     if [[ -f "$KITTY_MAIN" ]] && ! grep -qF 'hakucfg/config/kitty.conf' "$KITTY_MAIN"; then

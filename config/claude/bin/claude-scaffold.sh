@@ -5,6 +5,10 @@
 # Existing files are never touched, so running it again changes nothing. When the
 # project has a .gitignore, .claude/settings.local.json is added to it: that file
 # collects personal "don't ask again" approvals and stays out of the repository.
+#
+# The deny rules keep every .env file unreadable except templates whose name ends
+# in example or sample. Claude Code applies deny before allow, so the carve-out is
+# written as bracket classes rather than an allow rule.
 set -euo pipefail
 
 LOCAL_SETTINGS=".claude/settings.local.json"
@@ -111,7 +115,12 @@ create .claude/settings.json <<'JSON'
     "deny": [
       "Bash(git * --output*)",
       "Read(.env)",
-      "Read(.env.*)"
+      "Read(.env.*[^e])",
+      "Read(.env.*[^l]e)",
+      "Read(.env.*[^p]le)",
+      "Read(.env.*[^m]ple)",
+      "Read(.env.*[^a]mple)",
+      "Read(.env.*[^xs]ample)"
     ]
   }
 }
@@ -158,8 +167,9 @@ TODO: the top-level directories and what lives in each.
 - Match the style of the surrounding code; the formatter and linter above settle disputes.
 - Keep a change focused on its task and leave unrelated code alone.
 - New behaviour comes with a test next to the code it covers.
-- Configuration comes from the environment. `.env` files are denied to Claude Code in
-  `.claude/settings.json`; describe new variables in the README instead.
+- Configuration comes from the environment. `.env` files holding real values are denied to
+  Claude Code in `.claude/settings.json`, while `.env.example` and `.env.sample` stay readable;
+  describe new variables there.
 
 ## Before calling a change done
 

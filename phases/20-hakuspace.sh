@@ -86,6 +86,23 @@ FONT_STAMP="$FONT_DIR/.rice-version"
 
 FISH_PATH="/usr/bin/fish"
 
+# lionheartp/Hyprland is the COPR hakuspace's own Fedora guide names, and the one
+# building hypridle 0.1.8, the first release with the condition_cmd upstream's
+# idle config is written around. It also builds kitty, cliphist, awww, waybar-git
+# and dozens more that would shadow Fedora's or another COPR's copies, so it is
+# restricted to the packages below, xcur2png (which nwg-look Requires and Fedora
+# ships nowhere), and the three hypr libraries those builds link against at
+# sonames newer than Fedora's. That set resolves on a clean Fedora 44 with kitty,
+# cliphist and waybar still coming from Fedora.
+HYPR_COPR="lionheartp/Hyprland"
+HYPR_COPR_PACKAGES=(hypridle hyprlock hyprpicker mpvpaper nwg-look)
+HYPR_COPR_INCLUDEPKGS=("${HYPR_COPR_PACKAGES[@]}" xcur2png hyprlang hyprutils hyprgraphics)
+HYPR_COPR_RETIRED="eli-xciv/hyprland"
+HYPRIDLE_MIN_VERSION="0.1.8"
+
+POWERPROFILESCTL_SYSTEM="/usr/bin/powerprofilesctl"
+POWERPROFILESCTL_SHIM_MARKER="rice-powerprofilesctl-shim"
+
 WORK_DIR=""
 cleanup() { [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]] && rm -rf "$WORK_DIR"; return 0; }
 trap cleanup EXIT
@@ -94,6 +111,7 @@ trap cleanup EXIT
 
 # Restrict a COPR to the packages we actually want from it, so its builds of
 # packages Fedora also ships cannot win a version comparison at the next upgrade.
+# An existing includepkgs line is rewritten when the wanted set has changed.
 copr_restrict() {
     local owner_project="$1"; shift
     local line="includepkgs=$*"
@@ -114,14 +132,85 @@ copr_restrict() {
         return 0
     fi
 
+    local current
     for file in "${files[@]}"; do
-        if grep -q '^includepkgs=' "$file"; then
+        current="$(grep -m1 '^includepkgs=' "$file" 2>/dev/null || true)"
+        if [[ "$current" == "$line" ]]; then
             log_skip "already restricted: $(basename "$file")"
             continue
         fi
-        sudo sed -i "/^\[/a ${line}" "$file"
+        if [[ -n "$current" ]]; then
+            sudo sed -i "s|^includepkgs=.*|${line}|" "$file"
+        else
+            sudo sed -i "/^\[/a ${line}" "$file"
+        fi
         log_ok "restricted $(basename "$file") to: $*"
     done
+}
+
+# Drop the COPR earlier runs took the hypr tools from. Its hypridle is 0.1.7, which
+# ignores condition_cmd, and its hypr libraries would otherwise keep competing with
+# the replacement's in every transaction.
+retire_hypr_copr() {
+    local owner="${HYPR_COPR_RETIRED%%/*}" project="${HYPR_COPR_RETIRED##*/}"
+    compgen -G "/etc/yum.repos.d/_copr*${owner}*${project}*.repo" >/dev/null 2>&1 || return 0
+
+    log_info "replacing copr $HYPR_COPR_RETIRED with $HYPR_COPR"
+    if run sudo dnf copr remove "$HYPR_COPR_RETIRED"; then
+        is_dry_run || log_ok "removed copr $HYPR_COPR_RETIRED"
+    else
+        log_warn "could not remove copr $HYPR_COPR_RETIRED; its older hypr builds stay visible to dnf"
+        rice_record_failure repo "$HYPR_COPR_RETIRED (could not remove)"
+    fi
+}
+
+# pkg_install leaves an installed package alone, so builds that arrived from the
+# retired COPR have to be moved to the replacement's newer ones explicitly.
+upgrade_hypr_packages() {
+    local installed=() pkg
+    for pkg in "${HYPR_COPR_PACKAGES[@]}"; do
+        pkg_installed "$pkg" && installed+=("$pkg")
+    done
+    (( ${#installed[@]} > 0 )) || return 0
+
+    if ! run sudo dnf upgrade -y "${installed[@]}"; then
+        log_warn "could not upgrade ${installed[*]} from $HYPR_COPR"
+        rice_record_failure package "${installed[*]} (upgrade from $HYPR_COPR)"
+    fi
+}
+
+# Print the version `hypridle -V` reports ("hypridle v0.1.8"), without the v.
+hypridle_version() {
+    local out
+    out="$(hypridle -V </dev/null 2>/dev/null || true)"
+    [[ "$out" =~ v?([0-9]+(\.[0-9]+)+) ]] && printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+}
+
+# hakuspace's idle_inhibit.sh refuses to run on a hypridle older than 0.1.8, and
+# upstream makes it the condition_cmd of every idle listener, so an older build
+# silently loses the audio and bar-toggle idle inhibition.
+report_hypridle_version() {
+    is_dry_run && return 0
+    if ! command -v hypridle >/dev/null 2>&1; then
+        log_warn "hypridle is not installed, so the session never dims, locks or blanks on idle"
+        return 0
+    fi
+
+    local version
+    version="$(hypridle_version)"
+    if [[ -z "$version" ]]; then
+        log_warn "could not read a version from hypridle -V"
+        rice_record_failure package "hypridle (version unknown)"
+        return 0
+    fi
+
+    if [[ "$(printf '%s\n%s\n' "$HYPRIDLE_MIN_VERSION" "$version" | sort -V | head -n1)" == "$HYPRIDLE_MIN_VERSION" ]]; then
+        log_ok "hypridle $version (needs $HYPRIDLE_MIN_VERSION or newer)"
+    else
+        log_warn "hypridle $version is older than $HYPRIDLE_MIN_VERSION; idle_inhibit.sh will refuse to run, so audio no longer holds off the idle timers"
+        rice_record_failure package "hypridle $version (below $HYPRIDLE_MIN_VERSION)"
+    fi
 }
 
 install_packages() {
@@ -160,11 +249,13 @@ install_packages() {
 
     # pactl and pacat live in pulseaudio-utils, which nothing else pulls in:
     # PipeWire's pulse shim serves the protocol but ships none of the client
-    # tools. idle_inhibit.sh reads pactl to decide whether audio is playing, and
-    # it is the condition_cmd of every hypridle listener, so without it the
-    # screen dims during a video. record.sh refuses to start without pactl, and
-    # uses pacat and pw-metadata (pipewire-utils) to hold the sink alive at a
-    # fixed rate while recording.
+    # tools. Upstream's hypridle.conf makes idle_inhibit.sh the condition_cmd of
+    # each of its listeners, which hypridle honours from 0.1.8 on, and the script
+    # asks pactl whether an uncorked, unmuted stream is playing. Without pactl it
+    # always answers "idle", so the screen dims, locks and blanks during a video
+    # or a call. record.sh refuses to start without pactl, and uses pacat and
+    # pw-metadata (pipewire-utils) to hold the sink alive at a fixed rate while
+    # recording.
     pkg_install pulseaudio-utils pipewire-utils
     pkg_install mpv imv
 
@@ -195,18 +286,15 @@ install_packages() {
 
     # hypridle and hyprlock speak ext-session-lock-v1, which Niri implements, so
     # they work here without Hyprland, and accent_color_picker.sh shells out to
-    # hyprpicker. This copr also builds cliphist and waybar-git, hence the
-    # restriction; the hypr* libraries stay in the list because these builds can
-    # need newer sonames than Fedora ships. xcur2png is in the list because
-    # nwg-look Requires it and Fedora ships it nowhere, so restricting the copr
-    # without it makes nwg-look uninstallable.
-    if copr_enable eli-xciv/hyprland; then
-        copr_restrict eli-xciv/hyprland \
-            hypridle hyprlock hyprpicker mpvpaper nwg-look xcur2png \
-            hyprlang hyprutils hyprgraphics hyprcursor
-        pkg_install mpvpaper hypridle hyprlock hyprpicker nwg-look
+    # hyprpicker. See HYPR_COPR for why the COPR is restricted.
+    retire_hypr_copr
+    if copr_enable "$HYPR_COPR"; then
+        copr_restrict "$HYPR_COPR" "${HYPR_COPR_INCLUDEPKGS[@]}"
+        upgrade_hypr_packages
+        pkg_install "${HYPR_COPR_PACKAGES[@]}"
+        report_hypridle_version
     else
-        log_skip "mpvpaper, hypridle, hyprlock, hyprpicker and nwg-look unavailable without their copr"
+        log_skip "${HYPR_COPR_PACKAGES[*]} unavailable without copr $HYPR_COPR"
     fi
 
     if copr_enable atim/starship; then
@@ -336,6 +424,181 @@ install_colorthief() {
     fi
 }
 
+# -------------------------------------------------------- power profiles -----
+
+# The stand-in powerprofilesctl, written to stdout. The first comment line is the
+# marker that identifies an installed copy as rice's.
+powerprofilesctl_shim() {
+    cat <<'SHIM'
+#!/usr/bin/env bash
+# rice-powerprofilesctl-shim
+# A powerprofilesctl for power profile daemons that ship no client of their own,
+# such as Fedora's tuned-ppd. It implements get, set and list over the D-Bus
+# interface that tuned-ppd and power-profiles-daemon both serve, with the output
+# format and exit statuses of the upstream client.
+set -euo pipefail
+# Without this a failed D-Bus call inside $(...) would not stop the function around it.
+shopt -s inherit_errexit
+
+readonly PP_NAME=org.freedesktop.UPower.PowerProfiles
+readonly PP_PATH=/org/freedesktop/UPower/PowerProfiles
+readonly PP_IFACE=org.freedesktop.UPower.PowerProfiles
+
+usage() {
+    cat <<'EOF'
+usage: powerprofilesctl [-h] {list,get,set} ...
+
+  list           List available power profiles (the default)
+  get            Print the currently active power profile
+  set PROFILE    Set the currently active power profile
+
+A busctl-based stand-in for the power-profiles-daemon client.
+EOF
+}
+
+fail_bus() {
+    printf 'Failed to communicate with power-profiles-daemon: %s\n' "$1" >&2
+    exit 1
+}
+
+fail_usage() {
+    usage >&2
+    printf 'powerprofilesctl: error: %s\n' "$1" >&2
+    exit 2
+}
+
+# Print one busctl value token per line, with string quoting and escapes removed.
+tokens() {
+    awk '{
+        tok = ""; has = 0; inq = 0; esc = 0
+        for (i = 1; i <= length($0); i++) {
+            c = substr($0, i, 1)
+            if (inq) {
+                if (esc) { tok = tok c; esc = 0 }
+                else if (c == "\\") esc = 1
+                else if (c == "\"") inq = 0
+                else tok = tok c
+            } else if (c == "\"") { inq = 1; has = 1 }
+            else if (c == " ") { if (has) print tok; tok = ""; has = 0 }
+            else { tok = tok c; has = 1 }
+        }
+        if (has) print tok
+    }'
+}
+
+get_raw() {
+    local out
+    out="$(busctl --system get-property "$PP_NAME" "$PP_PATH" "$PP_IFACE" "$1" 2>&1)" || fail_bus "$out"
+    printf '%s\n' "$out"
+}
+
+get_string() {
+    local raw
+    raw="$(get_raw "$1")"
+    tokens <<<"$raw" | sed -n 2p
+}
+
+# Render the Profiles property (aa{sv}). MODE "names" prints one profile per line
+# in daemon order; "list" prints upstream's listing, newest-first like the client.
+render_profiles() {
+    local mode="$1" active="${2:-}" degraded="${3:-}" raw
+    raw="$(get_raw Profiles)"
+    tokens <<<"$raw" | awk -v mode="$mode" -v active="$active" -v reason="$degraded" '
+        { t[NR] = $0 }
+        END {
+            if (t[1] != "aa{sv}") exit 3
+            n = t[2] + 0; i = 3
+            for (d = 1; d <= n; d++) {
+                m = t[i++] + 0
+                for (k = 1; k <= m; k++) {
+                    key = t[i++]; type = t[i++]; val = t[i++]
+                    if (length(type) != 1) exit 3
+                    v[d, key] = val; seen[d, key] = 1
+                }
+            }
+            if (mode == "names") {
+                for (d = 1; d <= n; d++) print v[d, "Profile"]
+                exit 0
+            }
+            first = 1
+            for (d = n; d >= 1; d--) {
+                if (!first) print ""
+                first = 0
+                name = v[d, "Profile"]
+                printf "%s %s:\n", (name == active ? "*" : " "), name
+                if (seen[d, "CpuDriver"]) printf "    CpuDriver:\t%s\n", v[d, "CpuDriver"]
+                if (seen[d, "PlatformDriver"]) printf "    PlatformDriver:\t%s\n", v[d, "PlatformDriver"]
+                if (name == "performance") printf "    Degraded:   %s\n", (reason != "" ? "yes (" reason ")" : "no")
+            }
+        }' || fail_bus "unexpected Profiles value: $raw"
+}
+
+cmd_get() {
+    (( $# == 0 )) || fail_usage "unrecognized arguments: $*"
+    get_string ActiveProfile
+}
+
+cmd_list() {
+    (( $# == 0 )) || fail_usage "unrecognized arguments: $*"
+    local active degraded
+    active="$(get_string ActiveProfile)"
+    degraded="$(get_string PerformanceDegraded)"
+    render_profiles list "$active" "$degraded"
+}
+
+cmd_set() {
+    (( $# == 1 )) || fail_usage "set takes exactly one profile"
+    local want="$1" names out
+    names="$(render_profiles names)"
+    if ! grep -qxF -- "$want" <<<"$names"; then
+        fail_usage "argument profile: invalid choice: '$want' (choose from $(paste -sd, - <<<"$names"))"
+    fi
+    out="$(busctl --system set-property "$PP_NAME" "$PP_PATH" "$PP_IFACE" ActiveProfile s "$want" 2>&1)" ||
+        fail_bus "$out"
+}
+
+main() {
+    local cmd="${1:-list}"
+    (( $# > 0 )) && shift
+    case "$cmd" in
+        list) cmd_list "$@" ;;
+        get) cmd_get "$@" ;;
+        set) cmd_set "$@" ;;
+        -h|--help) usage ;;
+        *) fail_usage "'$cmd' is not supported by this stand-in (supported: list, get, set)" ;;
+    esac
+}
+
+main "$@"
+SHIM
+}
+
+# hakuspace's swaync power buttons run `powerprofilesctl set <profile>`, but Fedora's
+# default tuned-ppd serves the power profile D-Bus interface without shipping that
+# client. The stand-in speaks the same interface through busctl. It is withdrawn
+# once a real client exists, because RICE_USER_BIN sits ahead of /usr/bin on PATH.
+install_powerprofilesctl_shim() {
+    log_step "powerprofilesctl"
+    local dst="$RICE_USER_BIN/powerprofilesctl"
+
+    if [[ -x "$POWERPROFILESCTL_SYSTEM" ]]; then
+        if [[ -f "$dst" ]] && grep -qF "$POWERPROFILESCTL_SHIM_MARKER" "$dst" 2>/dev/null; then
+            run rm -f -- "$dst"
+            is_dry_run || log_ok "removed the powerprofilesctl stand-in, $POWERPROFILESCTL_SYSTEM is installed"
+        else
+            log_skip "$POWERPROFILESCTL_SYSTEM is installed, no stand-in needed"
+        fi
+        return 0
+    fi
+
+    rice_user_bin_ensure
+    local stage
+    stage="$(mktemp -d)"
+    powerprofilesctl_shim > "$stage/powerprofilesctl"
+    seed_file "$stage/powerprofilesctl" "$dst" 0755
+    rm -rf "$stage"
+}
+
 # ----------------------------------------------------------------- shell -----
 
 resolve_fish() {
@@ -441,7 +704,10 @@ clone_hakuspace() {
     log_step "hakuspace $HAKUSPACE_TAG"
 
     if [[ ! -e "$HAKUSPACE_DIR" ]]; then
-        command -v git >/dev/null 2>&1 || die "git is required to clone hakuspace"
+        if ! command -v git >/dev/null 2>&1; then
+            is_dry_run && { log_skip "dry-run: git is missing here; 00-system installs it first on a real run"; return 0; }
+            die "git is required to clone hakuspace"
+        fi
         run git clone --depth 1 --branch "$HAKUSPACE_TAG" "$HAKUSPACE_REPO" "$HAKUSPACE_DIR"
         is_dry_run || log_ok "cloned hakuspace $HAKUSPACE_TAG into $HAKUSPACE_DIR"
         return 0
@@ -570,6 +836,28 @@ verify_archive_prompts() {
     die "refusing to drive install.sh with a sequence that does not match"
 }
 
+# Confirm install.sh at the checked-out tag still has the prompt shape the answer
+# file was traced against. HAKUSPACE_TAG can be moved forward from the Maintain menu,
+# and a different prompt count there would desynchronise the same eight answers.
+# The signature is the prompt count of install.sh and scripts/functions.sh at v2.3.1.
+INSTALLER_PROMPT_SIGNATURE="11 4"
+
+verify_installer_prompts() {
+    local found="" f
+    for f in install.sh scripts/functions.sh; do
+        [[ -r "$HAKUSPACE_DIR/$f" ]] || die "missing $HAKUSPACE_DIR/$f; the clone is incomplete"
+        found+="$(grep -cE 'read -r -p|ask_yes_no "' "$HAKUSPACE_DIR/$f" || true) "
+    done
+    found="${found% }"
+    if [[ "$found" == "$INSTALLER_PROMPT_SIGNATURE" ]]; then
+        log_ok "install.sh prompt shape matches the traced sequence ($found)"
+        return 0
+    fi
+    log_err "install.sh prompt shape is '$found'; the answers were traced against '$INSTALLER_PROMPT_SIGNATURE'"
+    log_err "re-trace the prompts for $HAKUSPACE_TAG and update write_answers before installing it"
+    die "refusing to drive install.sh with answers written for a different prompt shape"
+}
+
 # then hit EOF, every asset is skipped, and install.sh still reports success.
 write_answers() {
     printf '2\ny\ny\ny\ny\ny\ny\ny\n' > "$1"
@@ -655,6 +943,7 @@ run_installer() {
     # means it cannot prompt at all.
     sudo -v || die "sudo is required to run install.sh"
 
+    verify_installer_prompts
     defuse_extra_prompts
     preclone_archive
     verify_archive_prompts
@@ -789,6 +1078,7 @@ verify_deployment() {
 }
 
 install_packages
+install_powerprofilesctl_shim
 install_nerd_font
 install_colorthief
 set_login_shell

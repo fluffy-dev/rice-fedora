@@ -1,0 +1,4 @@
+! include %S/evdev
+
+! option = symbols
+  rice:alt_shift_release = +rice(alt_shift_release)

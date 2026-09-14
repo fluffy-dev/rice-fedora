@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Pin the teal accent, size the desktop to the panel, and seed the wallpapers.
+# Pin the teal accent, size the desktop to the panel, set up the keyboard layouts
+# and the notification that names each switch, and seed the wallpapers.
 #
 # The display scale has to be worked out without a compositor: this phase runs
 # from a TTY or from the GNOME session that Fedora boots into, so `niri msg` and
@@ -19,6 +20,15 @@ HAKU_STATE_DIR="$HOME/.local/state/hakuspace"
 THEME_STATE_FILE="$HAKU_STATE_DIR/state/state.env"
 NIRI_STYLE="$HAKU_STATE_DIR/theme/niri-style.kdl"
 WALLPAPER_DIR="$HOME/Pictures/Wallpapers"
+
+# libxkbcommon reads user rules from $XDG_CONFIG_HOME/xkb when that is set and
+# from ~/.config/xkb only when it is not, so the same rule picks the target.
+XKB_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/xkb"
+LAYOUT_NOTIFY="$RICE_USER_BIN/layout-notify"
+
+# The accent helper's first comment line, which is also how a copy left behind in
+# ~/.local/bin is recognised as this phase's own.
+ACCENT_HELPER_TAG="# Switch the desktop accent colour and re-render every themed surface."
 
 # What this phase last handed to gen_style.sh: the accent, the font family and
 # the font size, since gen_style.sh is the only writer of all three. The
@@ -52,6 +62,20 @@ theme_stage() {
     mkdir -p "$(dirname "$staged")"
     cp -- "$src" "$staged"
     printf '%s\n' "$staged"
+}
+
+# Replace each @@NAME@@ token in a staged file, given NAME=VALUE pairs.
+#
+# Plain string replacement rather than sed, so a value holding a delimiter, a
+# backslash or an ampersand lands verbatim.
+theme_fill_tokens() {
+    local file="$1" pair content
+    shift
+    content="$(cat -- "$file")"
+    for pair in "$@"; do
+        content="${content//"@@${pair%%=*}@@"/"${pair#*=}"}"
+    done
+    printf '%s\n' "$content" > "$file"
 }
 
 # Make one of hakuspace's own scripts runnable.
@@ -337,6 +361,25 @@ theme_scale_for_mode() {
     fi
 }
 
+# ----------------------------------------------------------------- keyboard ---
+
+# Print the xkb options niri gets for a LAYOUT_SWITCH value, or fail for a value
+# this phase does not know. Right Alt composes in every mode.
+#
+# alt_shift_press is the fallback for alt_shift. Both switch on Alt+Shift, but the
+# stock option acts on press, so a chord containing Alt and Shift flips the layout
+# and loses a modifier. grp:alt_shift_toggle is avoided outright: it also turns
+# Right Shift+Right Alt into a switch and so takes the compose key away.
+theme_xkb_options() {
+    case "$1" in
+        alt_shift)       printf 'rice:alt_shift_release,compose:ralt\n' ;;
+        alt_shift_press) printf 'grp:lalt_lshift_toggle,compose:ralt\n' ;;
+        caps)            printf 'grp:caps_toggle,compose:ralt\n' ;;
+        none)            printf 'compose:ralt\n' ;;
+        *)               return 1 ;;
+    esac
+}
+
 # ------------------------------------------------------------------- config ---
 
 log_step "display"
@@ -387,19 +430,54 @@ else
     install_file "$staged_setting" "$SETTING_DST" 0755
 fi
 
+log_step "keyboard layouts"
+
+XKB_LAYOUT="$KEYBOARD_LAYOUTS"
+if [[ ! "$XKB_LAYOUT" =~ ^[A-Za-z0-9_/-]+(,[A-Za-z0-9_/-]+)*$ ]]; then
+    log_err "KEYBOARD_LAYOUTS is '$KEYBOARD_LAYOUTS'; expected xkb layout names such as us,ru"
+    rice_record_failure config "KEYBOARD_LAYOUTS $KEYBOARD_LAYOUTS"
+    XKB_LAYOUT="us,ru"
+    log_warn "using $XKB_LAYOUT instead"
+fi
+
+LAYOUT_SWITCH_MODE="$LAYOUT_SWITCH"
+if ! XKB_OPTIONS="$(theme_xkb_options "$LAYOUT_SWITCH_MODE")"; then
+    log_err "LAYOUT_SWITCH is '$LAYOUT_SWITCH'; expected alt_shift, alt_shift_press, caps or none"
+    rice_record_failure config "LAYOUT_SWITCH $LAYOUT_SWITCH"
+    LAYOUT_SWITCH_MODE="alt_shift"
+    XKB_OPTIONS="$(theme_xkb_options "$LAYOUT_SWITCH_MODE")"
+    log_warn "using $LAYOUT_SWITCH_MODE instead"
+fi
+log_ok "layouts $XKB_LAYOUT with xkb options $XKB_OPTIONS"
+[[ "$XKB_LAYOUT" == *,* ]] || log_info "only one layout is configured, so a switch has nowhere to go"
+
+# niri swaps a keymap it cannot build for its US-only default, so the files that
+# define the custom option are on disk before the override that names it.
+if [[ "$LAYOUT_SWITCH_MODE" == alt_shift ]]; then
+    seed_file "$RICE_ROOT/config/xkb/rules/evdev" "$XKB_USER_DIR/rules/evdev"
+    seed_file "$RICE_ROOT/config/xkb/symbols/rice" "$XKB_USER_DIR/symbols/rice"
+    log_info "Alt+Shift switches on a lone press and release (rice:alt_shift_release)"
+    log_warn "only a live niri session proves niri builds that keymap; after logging in to Niri run"
+    log_warn "  journalctl --user -b | grep 'error loading the configured xkb keymap'"
+    log_warn "any match means niri fell back to US only: set LAYOUT_SWITCH=alt_shift_press in"
+    log_warn "config.local.env and re-run this phase for the stock grp:lalt_lshift_toggle"
+fi
+
+log_step "layout notifications"
+
+pkg_install jq libnotify
+rice_user_bin_ensure
+seed_file "$RICE_ROOT/config/desktop/layout-notify.sh" "$LAYOUT_NOTIFY" 0755
+
 log_step "niri overrides"
 
-# Upstream's hypridle sources ~/hakucfg/hypridle.con*, so the override belongs at
-# the hakucfg root. Its own template lands in ~/hakucfg/config/ where that glob
-# cannot see it.
-install_file "$RICE_ROOT/config/hakucfg/hypridle.conf" "$HAKUCFG_DIR/hypridle.conf" 0644
-
 staged_kdl="$(theme_stage "$RICE_ROOT/config/hakucfg/wm/niri-custom.kdl" "niri-custom.kdl")"
-sed -i.bak \
-    -e "s|@@OUTPUT_NAME@@|$OUTPUT_NAME|g" \
-    -e "s|@@DISPLAY_SCALE@@|$SCALE|g" \
-    "$staged_kdl"
-rm -f "$staged_kdl.bak"
+theme_fill_tokens "$staged_kdl" \
+    "OUTPUT_NAME=$OUTPUT_NAME" \
+    "DISPLAY_SCALE=$SCALE" \
+    "XKB_LAYOUT=$XKB_LAYOUT" \
+    "XKB_OPTIONS=$XKB_OPTIONS" \
+    "LAYOUT_NOTIFY=$LAYOUT_NOTIFY"
 if grep -q '@@' "$staged_kdl"; then
     die "unsubstituted placeholder left in niri-custom.kdl"
 fi
@@ -414,8 +492,8 @@ else
 fi
 
 # niri has created the X11 sockets, exported DISPLAY and run xwayland-satellite
-# itself since v25.08, so nothing here starts it and the override deliberately
-# spawns nothing. What still has to be true is that the binary is on disk for
+# itself since v25.08, so neither this phase nor the override starts it. What
+# still has to be true is that the binary is on disk for
 # niri to run, and that the DISPLAY pin in the shipped environment.kdl is unset
 # by the override above, so clients read the display number niri actually bound.
 if command -v xwayland-satellite >/dev/null 2>&1; then
@@ -490,7 +568,7 @@ log_step "accent helper"
 
 cat > "$STAGE_DIR/accent" <<ACCENT_EOF
 #!/usr/bin/env bash
-# Switch the desktop accent colour and re-render every themed surface.
+$ACCENT_HELPER_TAG
 #
 # Usage: accent [teal|aqua|emerald|RRGGBB]
 #
@@ -556,7 +634,16 @@ else
 fi
 ACCENT_EOF
 
-install_file "$STAGE_DIR/accent" "$LOCAL_BIN/accent" 0755
+seed_file "$STAGE_DIR/accent" "$RICE_USER_BIN/accent" 0755
+
+# hakuspace moves ~/.local/bin aside on every update, and Fedora's ~/.bashrc puts
+# it ahead of everything else on PATH, so a copy of the helper left there from
+# before would shadow this one in bash with stale colours until then.
+legacy_accent="$LOCAL_BIN/accent"
+if [[ -f "$legacy_accent" ]] && grep -qxF -- "$ACCENT_HELPER_TAG" "$legacy_accent"; then
+    run rm -f -- "$legacy_accent"
+    is_dry_run || log_ok "removed the superseded accent helper from $LOCAL_BIN"
+fi
 
 # --------------------------------------------------------------- wallpapers ---
 

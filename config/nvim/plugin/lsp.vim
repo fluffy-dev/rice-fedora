@@ -8,7 +8,9 @@
 " formats: the TypeScript servers advertise formatting too and would otherwise
 " format the buffer a second time. TypeScript 7's native tsc serves TypeScript
 " unless the project pins an older TypeScript in node_modules, which only ts_ls
-" can load; tsc needs a fraction of ts_ls's memory. Diagnostics colour the line
+" can load; tsc needs a fraction of ts_ls's memory. biome attaches only where a
+" biome.json or biome.jsonc exists, not merely because package.json lists it, so
+" it never reformats a project that has not opted in. Diagnostics colour the line
 " number and leave the sign column to git hunks.
 
 lua << EOF
@@ -54,8 +56,8 @@ local function typescript_major(root)
   return type(version) == 'string' and tonumber(version:match('^(%d+)%.')) or nil
 end
 
---- Restricts a TypeScript server to projects whose TypeScript major version it accepts.
-local function for_typescript(name, accepts)
+--- Narrows a server's upstream root detection to the roots that accepts(bufnr, root) approves.
+local function restrict_root(name, accepts)
   local root_dir = vim.lsp.config[name] and vim.lsp.config[name].root_dir
   if type(root_dir) ~= 'function' then
     return
@@ -63,7 +65,7 @@ local function for_typescript(name, accepts)
   vim.lsp.config(name, {
     root_dir = function(bufnr, on_dir)
       root_dir(bufnr, function(root)
-        if accepts(typescript_major(root)) then
+        if accepts(bufnr, root) then
           on_dir(root)
         end
       end)
@@ -71,8 +73,30 @@ local function for_typescript(name, accepts)
   })
 end
 
-for_typescript('tsc', function(major) return major == nil or major >= 7 end)
-for_typescript('ts_ls', function(major) return major ~= nil and major < 7 end)
+--- True when a biome.json or biome.jsonc sits between the buffer's file and its project root.
+local function has_biome_config(bufnr, root)
+  local filename = vim.api.nvim_buf_get_name(bufnr)
+  if filename == '' then
+    return false
+  end
+  return vim.fs.find({ 'biome.json', 'biome.jsonc' }, {
+    path = vim.fs.dirname(filename),
+    upward = true,
+    type = 'file',
+    limit = 1,
+    stop = vim.fs.dirname(root),
+  })[1] ~= nil
+end
+
+restrict_root('tsc', function(_, root)
+  local major = typescript_major(root)
+  return major == nil or major >= 7
+end)
+restrict_root('ts_ls', function(_, root)
+  local major = typescript_major(root)
+  return major ~= nil and major < 7
+end)
+restrict_root('biome', has_biome_config)
 
 local servers = {
   basedpyright = 'basedpyright-langserver',

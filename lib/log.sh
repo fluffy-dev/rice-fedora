@@ -79,11 +79,23 @@ set_kv() {
     log_ok "set $key=$value in $(basename "$file")"
 }
 
+# True when both files exist with identical content. cmp comes from diffutils,
+# which Fedora Workstation does not guarantee, so a checksum comparison stands in
+# when it is absent. Every content comparison in the repo goes through here.
+same_file() {
+    [[ -f "$1" && -f "$2" ]] || return 1
+    if command -v cmp >/dev/null 2>&1; then
+        cmp -s -- "$1" "$2"
+    else
+        [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
+    fi
+}
+
 # Copy a file into place, backing up an existing different version first.
 install_file() {
     local src="$1" dst="$2" mode="${3:-0644}"
     [[ -f "$src" ]] || die "install_file: missing source $src"
-    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    if same_file "$src" "$dst"; then
         log_skip "unchanged: $dst"
         return 0
     fi
