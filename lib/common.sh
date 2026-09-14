@@ -34,6 +34,8 @@ rice_record_failure() {
 . "$RICE_ROOT/lib/pkg.sh"
 # shellcheck source=./guard.sh
 . "$RICE_ROOT/lib/guard.sh"
+# shellcheck source=./deploy.sh
+. "$RICE_ROOT/lib/deploy.sh"
 
 # Defaults first, user overrides second, machine-local overrides last.
 # shellcheck source=../config.env
@@ -43,3 +45,7 @@ if [[ -f "$RICE_ROOT/config.local.env" ]]; then
     . "$RICE_ROOT/config.local.env"
     log_info "applied config.local.env overrides"
 fi
+
+# After config.env, because the palette derives its accent from ACCENT.
+# shellcheck source=../config/palette.env
+. "$RICE_ROOT/config/palette.env"
