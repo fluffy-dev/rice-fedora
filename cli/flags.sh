@@ -132,7 +132,25 @@ rice_flags_main() {
             RAN+=("$name")
         else
             log_err "phase $name failed"
-            printf '\nResume with:\n  %s --only %s\n\n' "${RICE_ENTRY_PATH:-$RICE_ROOT/bootstrap.sh}" "$name"
+            # Resume from the failed phase onward, not with it alone: every later phase
+            # still has to run, and --only would quietly leave them undone.
+            local resume=() p pn reached=0
+            for p in "${PHASES[@]}"; do
+                pn="$(_rice_phase_name "$p")"
+                if [[ "$pn" == "$name" ]]; then
+                    reached=1
+                fi
+                if (( ${#ONLY[@]} > 0 )); then
+                    if (( reached )) && [[ " ${ONLY[*]} " == *" $pn "* ]]; then
+                        resume+=(--only "$pn")
+                    fi
+                elif (( ! reached )); then
+                    resume+=(--skip "$pn")
+                elif [[ " ${SKIP[*]:-} " == *" $pn "* ]]; then
+                    resume+=(--skip "$pn")
+                fi
+            done
+            printf '\nResume with:\n  %s%s\n\n' "${RICE_ENTRY_PATH:-$RICE_ROOT/bootstrap.sh}" "${resume[*]:+ ${resume[*]}}"
             exit 1
         fi
     done

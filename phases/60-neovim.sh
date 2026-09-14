@@ -43,12 +43,50 @@ LOAD_TIMEOUT=60
 
 enabled() { [[ "${!1:-false}" == "true" ]]; }
 
-# Run Neovim headless against the deployed config, bounded and never reading stdin.
-nvim_headless() {
-    local seconds="$1"
-    shift
-    timeout --kill-after=10 "$seconds" nvim --headless "$@" </dev/null
+# Prints the given process group when it still holds a live process.
+live_group() {
+    ps -A -o pgid=,stat= 2>/dev/null | awk -v g="$1" '$1 == g && $2 !~ /^Z/ { print g; exit }'
 }
+
+# Ends whatever still runs in a process group: TERM, then KILL after 5 seconds.
+reap_group() {
+    local deadline=$(( SECONDS + 5 ))
+    [[ -n "$(live_group "$1")" ]] || return 0
+    kill -TERM -- "-$1" 2>/dev/null || true
+    while (( SECONDS < deadline )); do
+        sleep 0.1
+        [[ -n "$(live_group "$1")" ]] || return 0
+    done
+    kill -KILL -- "-$1" 2>/dev/null || true
+}
+
+# Run Neovim headless against the deployed config, bounded and never reading stdin.
+# Expiry or Ctrl+C ends the whole tree under it, git clones and compilers included:
+# timeout signals its own process group and whatever outlives Neovim there is
+# reaped. A timeout started with & ignores SIGINT, as does headless Neovim, so an
+# interrupt is passed on as TERM and raised again once the tree is gone, which
+# stops the phase.
+nvim_headless() (
+    seconds="$1"; shift
+    interrupted=0 rc=0
+    trap 'interrupted=1' INT
+    timeout --kill-after=10 "$seconds" nvim --headless "$@" </dev/null &
+    pid=$!
+    trap 'interrupted=1; kill -TERM "$pid" 2>/dev/null || true' INT
+    if (( interrupted )); then kill -TERM "$pid" 2>/dev/null || true; fi
+    wait "$pid" || rc=$?
+    while (( interrupted )) && kill -0 "$pid" 2>/dev/null; do
+        wait "$pid" || true
+    done
+    if (( interrupted || rc == 124 || rc > 128 )); then
+        reap_group "$pid"
+    fi
+    if (( interrupted )); then
+        trap - INT
+        kill -INT "$BASHPID"
+    fi
+    exit "$rc"
+)
 
 install_packages() {
     log_step "Neovim and the tools behind it"

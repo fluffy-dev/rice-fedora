@@ -42,9 +42,9 @@ FISH_VENDOR_CONF_DIR="$HOME/.local/share/fish/vendor_conf.d"
 FISH_LEGACY_CONF_DIR="$HOME/.config/fish/conf.d"
 FISH_SNIPPET_HEADER="# Managed by the rice bootstrap (phase 40)."
 
-# The graphical session is not a shell, so `mise activate` never runs for it.
-# Shims are the shell-free entry point, and a systemd user environment drop-in is
-# how they reach every process the session spawns.
+# mise activates only in interactive shells. Everything else, the graphical
+# session included, reaches the runtimes through the shims, which always come
+# after the system directories so a bare python3 stays Fedora's.
 MISE_SHIMS_DIR="$HOME/.local/share/mise/shims"
 ENVIRONMENT_D_DIR="$HOME/.config/environment.d"
 
@@ -73,6 +73,30 @@ user_line_once() {
     mkdir -p "$(dirname "$file")"
     printf '%s\n' "$line" >> "$file"
     log_ok "appended to $(basename "$file"): $line"
+}
+
+# Put a line in a user-owned file, rewriting an older form of it in place, so the
+# file never carries both and the line keeps its position. Without the older form
+# this is user_line_once.
+user_line_upgrade() {
+    local legacy="$1" line="$2" file="$3" tmp
+    if [[ ! -r "$file" ]] || ! grep -qxF "$legacy" "$file" 2>/dev/null; then
+        user_line_once "$line" "$file"
+        return 0
+    fi
+    if is_dry_run; then
+        printf '  %s[dry-run]%s replace in %s: %s -> %s\n' "$C_DIM" "$C_RESET" "$file" "$legacy" "$line"
+        return 0
+    fi
+    tmp="$(mktemp)"
+    LEGACY="$legacy" LINE="$line" awk '
+        BEGIN { while ((getline l < ARGV[1]) > 0) if (l == ENVIRON["LINE"]) have = 1; close(ARGV[1]) }
+        $0 == ENVIRON["LEGACY"] { if (!have) print ENVIRON["LINE"]; have = 1; next }
+        { print }
+    ' "$file" > "$tmp"
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+    log_ok "updated in $(basename "$file"): $line"
 }
 
 # Render stdin into a user-owned file, keeping install_file's backup-and-compare
@@ -478,22 +502,25 @@ REPO
 
 # ---------------------------------------------------------------- runtimes ---
 
-# Put mise's shims on the PATH of the whole graphical session, not just of
-# interactive shells.
+# Put mise's shims on the PATH of the whole graphical session, after the system
+# directories.
 #
-# GDM starts the session through niri-session, which runs niri as a unit of the
-# systemd user manager, so a drop-in here is inherited by niri, by everything
-# niri spawns, by every desktop entry opened from rofi, and by JetBrains Toolbox
-# and each IDE it launches. Shells keep their own `mise activate`, which is the
-# richer form: it applies per-directory tool versions and env, which shims alone
-# do not.
+# Two routes carry the session's PATH, and both have to agree. The systemd user
+# manager builds its environment from environment.d, which this drop-in extends.
+# GDM's niri-session then re-executes itself through the user's login shell and
+# imports that shell's PATH into the user manager, replacing the first one, which
+# is why the login fish appends the same shims (see rice-mise.fish). niri, every
+# desktop entry opened from rofi, and JetBrains Toolbox with each IDE it launches
+# inherit the result. Interactive shells run the full `mise activate`, which also
+# applies per-directory tool versions and env; shims alone do not.
 mise_session_path() {
     write_user_file "$ENVIRONMENT_D_DIR/50-rice-mise.conf" <<CONF
 # Managed by the rice bootstrap (phase 40).
 #
-# Puts the mise shims on PATH for every process the graphical session starts, so
-# that GUI-launched editors and IDEs find go, node and the JDK. Without it only
-# interactive shells see them, because that is where mise activates.
+# Puts the mise shims on PATH for every process the systemd user manager starts,
+# so that GUI-launched editors and IDEs find go, node and the JDK. niri-session
+# later imports the login shell's PATH over this one; rice-mise.fish appends the
+# same directory there.
 #
 # The shims come after the system directories: hakuspace's GTK tools run a bare
 # python3 and need Fedora's, which has the RPM gi modules a mise Python lacks.
@@ -525,14 +552,23 @@ REPO
         return 0
     fi
 
-    write_fish_snippet rice-mise.fish <<'FISH'
+    write_fish_snippet rice-mise.fish <<FISH
 # Managed by the rice bootstrap (phase 40).
+#
+# niri-session runs through the login shell and hands that shell's PATH to the
+# whole graphical session, so only an interactive fish activates mise. Login and
+# script shells append the shims instead, keeping Fedora's python3 ahead of mise's.
 if type -q mise
-    mise activate fish | source
+    if status is-interactive
+        mise activate fish | source
+    else
+        fish_add_path --global --append --path ${MISE_SHIMS_DIR}
+    end
 end
 FISH
-    # shellcheck disable=SC2016  # the line is written to .bashrc, it expands there
-    user_line_once 'eval "$(mise activate bash)"' "$HOME/.bashrc"
+    # shellcheck disable=SC2016  # the lines are written to .bashrc, they expand there
+    user_line_upgrade 'eval "$(mise activate bash)"' \
+        'if [[ $- == *i* ]]; then eval "$(mise activate bash)"; fi' "$HOME/.bashrc"
 
     mise_session_path
 
@@ -685,11 +721,12 @@ jetbrains_paths() {
     jetbrains_icon "$bin"
     write_fish_snippet rice-jetbrains.fish <<FISH
 # Managed by the rice bootstrap (phase 40).
-fish_add_path --global --path "$TOOLBOX_DIR/bin"
-fish_add_path --global --path "$TOOLBOX_DATA_DIR/scripts"
+fish_add_path --global --append --path "$TOOLBOX_DIR/bin"
+fish_add_path --global --append --path "$TOOLBOX_DATA_DIR/scripts"
 FISH
-    user_line_once \
+    user_line_upgrade \
         "export PATH=\"$TOOLBOX_DIR/bin:$TOOLBOX_DATA_DIR/scripts:\$PATH\"" \
+        "export PATH=\"\$PATH:$TOOLBOX_DIR/bin:$TOOLBOX_DATA_DIR/scripts\"" \
         "$HOME/.bashrc"
 
     write_user_file "$HOME/.local/share/applications/jetbrains-toolbox.desktop" <<DESKTOP

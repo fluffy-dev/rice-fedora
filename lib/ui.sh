@@ -33,6 +33,7 @@ UI_ROWS=40
 UI_FAIL_TAIL=30
 UI_RUN_ELAPSED=0
 UI_RUN_INTERRUPTS=0
+UI_RUN_GROUPS=""
 
 _ui_cube() {
     if (( $1 < 48 )); then UI_CUBE=0
@@ -384,12 +385,48 @@ _ui_job_groups() {
         }' | sort -u
 }
 
+# Ctrl+C under the spinner: INT on the first press, TERM on the second and KILL
+# from the third, sent to every process group the job has had, so a group whose
+# parent already exited is still reached. UI_RUN_GROUPS collects those groups.
 _ui_forward_int() {
     local sig=INT group
     UI_RUN_INTERRUPTS=$(( UI_RUN_INTERRUPTS + 1 ))
+    (( UI_RUN_INTERRUPTS == 2 )) && sig=TERM
     (( UI_RUN_INTERRUPTS >= 3 )) && sig=KILL
     for group in $(_ui_job_groups "$1"); do
+        [[ " $UI_RUN_GROUPS " == *" $group "* ]] || UI_RUN_GROUPS+=" $group"
+    done
+    for group in $UI_RUN_GROUPS; do
         kill -"$sig" -- "-$group" 2>/dev/null || true
+    done
+}
+
+# Prints each of the given process groups that still holds a live process.
+# Zombies do not count, since nothing is left to stop in them.
+_ui_live_groups() {
+    ps -A -o pgid=,stat= 2>/dev/null | awk -v list="$*" '
+        BEGIN { n = split(list, g, " "); for (i = 1; i <= n; i++) want[g[i]] = 1 }
+        ($1 in want) && $2 !~ /^Z/ && !seen[$1]++ { print $1 }'
+}
+
+# Ends whatever still runs in the given process groups: TERM, then KILL for
+# anything left after UI_REAP_GRACE seconds (5 by default). Returns at once when
+# the groups are already empty.
+ui_reap_groups() {
+    local live group deadline sig=TERM
+    live="$(_ui_live_groups "$@")"
+    while [[ -n "$live" ]]; do
+        for group in $live; do
+            kill -"$sig" -- "-$group" 2>/dev/null || true
+        done
+        [[ "$sig" == KILL ]] && return 0
+        deadline=$(( SECONDS + ${UI_REAP_GRACE:-5} ))
+        while (( SECONDS < deadline )); do
+            sleep 0.1
+            live="$(_ui_live_groups "$live")"
+            [[ -n "$live" ]] || return 0
+        done
+        sig=KILL
     done
 }
 
@@ -416,13 +453,15 @@ _ui_last_line() {
 #
 # Returns the command's status, or 130 when interrupted. The command runs in its
 # own process group so that Ctrl+C can be forwarded to all of it rather than
-# leaving a package transaction orphaned. UI_RUN_OK_CODES lists extra statuses
+# leaving a package transaction orphaned, and once an interrupted command has
+# exited, anything left in the groups it was given is reaped. UI_RUN_OK_CODES lists extra statuses
 # that count as success, UI_RUN_SILENT=1 prints no result line, and a failure shows
 # the last UI_FAIL_TAIL lines of the log.
 ui_run_logged() {
     local title="$1" log="$2"; shift 2
     local start=$SECONDS rc=0 pid el i=0 note="" width prev_trap ok=0 code frame
     UI_RUN_INTERRUPTS=0
+    UI_RUN_GROUPS=""
     mkdir -p -- "$(dirname -- "$log")"
     : >> "$log"
 
@@ -468,6 +507,10 @@ ui_run_logged() {
         i=$(( i + 1 ))
     done
     wait "$pid" || rc=$?
+    if (( UI_RUN_INTERRUPTS > 0 )) && [[ -n "$UI_RUN_GROUPS" ]]; then
+        # shellcheck disable=SC2086  # a space-separated list of group ids
+        ui_reap_groups $UI_RUN_GROUPS
+    fi
     if [[ -n "$prev_trap" ]]; then eval "$prev_trap"; else trap - INT; fi
 
     UI_RUN_ELAPSED=$(( SECONDS - start ))

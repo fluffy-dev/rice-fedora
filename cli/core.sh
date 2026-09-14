@@ -74,17 +74,37 @@ rice_cmd_name() {
 
 # ----------------------------------------------------------------- running ----
 
-# Run a command with a time limit. Uses coreutils timeout where it exists and a
-# perl alarm elsewhere, so it also works on the machine this repo is written on.
-# --foreground keeps timeout in the caller's process group, where Ctrl+C reaches it.
-rice_timeout() {
-    local seconds="$1"; shift
-    if command -v timeout >/dev/null 2>&1; then
-        timeout --foreground --kill-after=15 "$seconds" "$@"
-    else
-        perl -e 'alarm shift; exec @ARGV or die "exec failed: $!\n"' "$seconds" "$@"
+# Run a command with a time limit, ending its whole process tree on expiry or
+# Ctrl+C. coreutils timeout signals its own process group, which holds the
+# command's descendants, and anything that outlives the command there is reaped
+# afterwards. A timeout started with & ignores SIGINT, and so does everything it
+# runs, so an interrupt is passed on as TERM and raised again here once the tree
+# is gone. Where coreutils timeout is missing, as on the machine this repo is
+# written on, a perl alarm bounds the command alone.
+rice_timeout() (
+    seconds="$1"; shift
+    if ! command -v timeout >/dev/null 2>&1; then
+        exec perl -e 'alarm shift; exec @ARGV or die "exec failed: $!\n"' "$seconds" "$@"
     fi
-}
+    interrupted=0 rc=0
+    trap 'interrupted=1' INT
+    timeout --kill-after=15 "$seconds" "$@" <&0 &
+    pid=$!
+    trap 'interrupted=1; kill -TERM "$pid" 2>/dev/null || true' INT
+    if (( interrupted )); then kill -TERM "$pid" 2>/dev/null || true; fi
+    wait "$pid" || rc=$?
+    while (( interrupted )) && kill -0 "$pid" 2>/dev/null; do
+        wait "$pid" || true
+    done
+    if (( interrupted || rc == 124 || rc > 128 )); then
+        ui_reap_groups "$pid"
+    fi
+    if (( interrupted )); then
+        trap - INT
+        kill -INT "$BASHPID"
+    fi
+    exit "$rc"
+)
 
 rice_on_exit() {
     sudo_keepalive_stop
@@ -222,9 +242,9 @@ rice_run_phases() {
         cmd="$(rice_cmd_name)"
         rest=("${names[@]:idx}")
         for row in "${rest[@]}"; do resume+=(--only "$row"); done
-        local lines=("Log: $RICE_RUN_DIR/$failed.log" "" "Resume with:" "  $cmd --only $failed")
+        local lines=("Log: $RICE_RUN_DIR/$failed.log" "" "Resume with:" "  $cmd ${resume[*]}")
         if (( ${#rest[@]} > 1 )); then
-            lines+=("" "Or run the rest of this selection:" "  $cmd ${resume[*]}")
+            lines+=("" "Or re-run only the phase that stopped:" "  $cmd --only $failed")
         fi
         ui_alert fail "Stopped at $failed" "${lines[@]}"
         (( failed_rc == 130 )) && ui_quit 130

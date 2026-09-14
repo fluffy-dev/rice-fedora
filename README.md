@@ -135,8 +135,9 @@ With no arguments on a terminal it needs gum 0.17 or newer, which Fedora 44 pack
 missing or older, `rice` installs or upgrades it with `sudo dnf`. A dry run never installs it.
 Without gum there is no menu, and since the plain bootstrap with no arguments runs every phase,
 a full system upgrade included, `rice` asks `Run every phase now without the menu? [y/N]` first.
-A dry run without gum has no menu either and asks the same question: answer N and run
-`rice --dry-run` instead, which previews every phase without the menu.
+A dry run without gum has no menu either and asks
+`Dry-run every phase now without the menu, modifying nothing? [y/N]` instead: answering y previews
+every phase through the plain bootstrap, still as a dry run, the same as `rice --dry-run`.
 
 Every action keeps its logs in `~/.local/state/rice/runs/<timestamp>-<kind>/`, one file per phase or
 step plus a `result` line, and Maintain browses them. Ctrl+C in any prompt or under any spinner ends
@@ -253,14 +254,14 @@ Phases run in filename order. Each is standalone, idempotent, and safe to re-run
 |---|---|
 | `00-system` | dnf tuning (parallel downloads, fastest mirror, `defaultyes`, written inside `[main]`), RPM Fusion free and nonfree, full system upgrade, baseline tools, flatpak plus the unfiltered Flathub remote, firmware update check (reports only, applies nothing, never prompts; exit 2 from `fwupdmgr get-updates` means up to date) |
 | `10-niri` | niri and xwayland-satellite (Fedora's own packages, COPR only as a fallback), gammastep, swayosd plus its libinput backend service, the xdg-desktop-portal set including the GNOME portal (this is what makes screen sharing work), mate-polkit, gnome-keyring. Asserts `/usr/share/wayland-sessions/niri.desktop` exists so GDM offers the session |
-| `20-hakuspace` | The rice package set, with hypridle, hyprlock, hyprpicker, mpvpaper and nwg-look from COPR `lionheartp/Hyprland` restricted by `includepkgs` (a leftover `eli-xciv/hyprland` is removed and its builds upgraded), and a warning when `hypridle -V` is below 0.1.8. The `busctl` stand-in for `powerprofilesctl` in `~/.local/share/rice/bin` while `/usr/bin/powerprofilesctl` is absent. JetBrainsMono Nerd Font, colorthief, clone of hakuspace at `HAKUSPACE_TAG`, a shallow pre-clone of `hakuspace-archive`, then upstream's `install.sh` driven non-interactively with a fixed eight-answer sequence, its output captured to a log and checked block by block. Sets fish as the login shell. Highest-risk phase |
+| `20-hakuspace` | The rice package set, with hypridle, hyprlock, hyprpicker, mpvpaper and nwg-look from COPR `lionheartp/Hyprland` restricted by `includepkgs` (a leftover `eli-xciv/hyprland` is removed and its builds upgraded), and a warning when `hypridle -V` is below 0.1.8. hypridle and hyprlock are the session lock, so they are installed before the rest of the COPR set and retried through COPR outages, six attempts over about five minutes (`HYPR_COPR_RETRY_DELAYS`). When either is still missing at the end, the phase stops the bootstrap, since nothing else locks the session on idle, lid close or suspend, and prints a resume command that skips only the phases before it. The phase also drops mise's directories from its own PATH, so the installer and the theme scripts run Fedora's `python3`. The `busctl` stand-in for `powerprofilesctl` in `~/.local/share/rice/bin` while `/usr/bin/powerprofilesctl` is absent. JetBrainsMono Nerd Font, colorthief, clone of hakuspace at `HAKUSPACE_TAG`, a shallow pre-clone of `hakuspace-archive`, then upstream's `install.sh` driven non-interactively with a fixed eight-answer sequence, its output captured to a log and checked block by block. Sets fish as the login shell. Highest-risk phase |
 | `30-theme` | Owns `~/hakucfg/wm/niri-custom.kdl` and two keys in `setting.sh`. Detects the panel resolution and writes the niri output scale, renders the keyboard layouts and switch options from `KEYBOARD_LAYOUTS` and `LAYOUT_SWITCH` (seeding `~/.config/xkb` for `alt_shift`), installs the `layout-notify` watcher, makes upstream's non-executable theme scripts executable, pins the teal accent with `gen_style.sh` and verifies it reached the generated theme, runs `apply_style.sh` only in a live session, installs the `accent` helper into `~/.local/share/rice/bin`, renders the `rice-` wallpapers |
 | `40-dev` | Docker CE from Docker's repo, Kubernetes tooling (kubectl, helm, k9s, kind, k3d, kubectx, kubens), mise plus `MISE_RUNTIMES` and a session-wide shim PATH, JetBrains Toolbox, Zen, VS Code, modern CLI set, git identity and an ed25519 key. Its fish snippets for mise and Toolbox go to `~/.local/share/fish/vendor_conf.d`, and copies an earlier run left in `~/.config/fish/conf.d` are removed |
 | `50-thinkpad` | Keeps whichever package provides `ppd-service`: tuned-ppd on a fresh Fedora 44, power-profiles-daemon on a system upgraded from Fedora 40 or earlier. Installs tuned-ppd only when neither is there, never installs power-profiles-daemon, and reports TLP as a conflict. The [sleep policy](#sleep-policy) (`hypridle.conf`, the logind lid drop-in, the GDM greeter, the GNOME session keys), the battery charge ceiling unit, the swap file through `swap-swapfile.swap`, the [opt-in trims](#power-swap-and-opt-in-trims), fprintd plus authselect, then report-only diagnostics for suspend mode, PipeWire, Wi-Fi, Bluetooth and amdgpu |
 | `60-neovim` | Neovim 0.12 from Fedora, plus ruff, fzf, tree-sitter-cli, gcc, uv, and psql with `ENABLE_DB_TOOLS`. basedpyright, TypeScript 7, typescript-language-server, biome and hurl through mise at pinned majors. The hand-written VimScript config seeded into `~/.config/nvim`, vim-plug 0.14.0 checked against its sha256, plugins and tree-sitter parsers installed headless and judged by what they left behind (both tools exit 0 on failure), then a start-up check for errors. Gated on `ENABLE_NEOVIM` |
 | `61-terminal` | kitty settings into `~/hakucfg/config/kitty.conf` (the Neovim scrollback pager only when nvim is installed, the Claude Code split map only with `ENABLE_CLAUDE_CODE`), the fish snippets and functions into `~/.local/share/fish`, tmux with `ENABLE_TMUX`, git aliases and delta, lazygit and bat, all coloured from `config/palette.env`, and `~/.local/share/rice/bin` on every PATH. Each deployed file is then loaded by its own tool, and a rejection is recorded rather than fatal |
 | `62-claude` | Claude Code from Anthropic's signed dnf repository, the key's fingerprint checked before import, installed even beside a native `~/.local/bin/claude`, which it warns about. `~/.claude/settings.json` with attribution off, a read-only allowlist and `.env` denials, a palette status line, `notify-send` hooks and `claude-scaffold`. Gated on `ENABLE_CLAUDE_CODE`. The Neovim side ships with phase 60's config |
-| `99-verify` | Re-runnable health check: session entry, deployed rice, accent, xwayland-satellite and the unpinned `DISPLAY`, VA-API driver, desktop tools, portals, the keyboard layouts and their watcher (and, inside a niri session, the live keymap), the accent helper, the hypr COPR and its `includepkgs`, hypridle 0.1.8, `powerprofilesctl`, Docker, kubectl, login shell, fonts; then the power profile daemon and its active profile, the lid, greeter, GNOME session and hypridle sleep policy, battery ceiling, swap file and its priority, the trims; then Neovim with its plugins, parsers and language servers, the kitty, fish, tmux and git layers, Shift+Enter under tmux, the `rice` command, and Claude Code. Mutates nothing, prints pass/fail/skip per item, exits non-zero only if something essential is broken, which in the terminal group means only a missing `nvim`. The rice Health screen runs it |
+| `99-verify` | Re-runnable health check: session entry, deployed rice, accent, xwayland-satellite and the unpinned `DISPLAY`, VA-API driver, desktop tools, portals, the keyboard layouts and their watcher (and, inside a niri session, the live keymap), the accent helper, the hypr COPR and its `includepkgs`, hypridle 0.1.8 and hyprlock, the `python3` the niri session resolves (Fedora's, able to import `gi`), `powerprofilesctl`, Docker, kubectl, login shell, fonts; then the power profile daemon and its active profile, the lid, greeter, GNOME session and hypridle sleep policy, battery ceiling, swap file and its priority, the trims; then Neovim with its plugins, parsers and language servers, the kitty, fish, tmux and git layers, Shift+Enter under tmux, the `rice` command, and Claude Code. Mutates nothing, prints pass/fail/skip per item, exits non-zero only if something essential is broken: the session entry, the deployed configs, the portal, hypridle, hyprlock, and in the terminal group only a missing `nvim`. The rice Health screen runs it |
 
 State lives in `~/.local/state/rice/`:
 
@@ -287,8 +288,10 @@ is already done, and re-running it anyway is harmless.
 ### Third-party repositories
 
 Fedora's own repositories plus RPM Fusion cover most of this. What is left comes from pinned
-COPRs and vendor repos, and every one of them is optional: if a repo is dead, the phase records
-the failure and carries on.
+COPRs and vendor repos. All but one are optional: if a repo is dead, the phase records the failure
+and carries on. The exception is `lionheartp/Hyprland`, the only source of hypridle and hyprlock,
+so phase 20 retries it for about five minutes and then stops the bootstrap when they did not install
+from it.
 
 | Repo | For | Notes |
 |---|---|---|
@@ -530,6 +533,16 @@ abbreviation sharing a name with one of hakuspace's loses. Phase 40's mise and T
 in that vendor directory too, and a copy of either an earlier run left in `~/.config/fish/conf.d` is
 removed, because it would replace the vendor one.
 
+The mise snippet runs `mise activate fish` only in an interactive fish. Every other fish, the login
+shell included, appends the mise shims to PATH instead, and the Toolbox directories are appended
+too. The reason is GDM's `niri-session`: it re-executes itself through your login shell and imports
+that shell's PATH into the whole graphical session. A login shell that activated mise would put
+mise's Python 3.12 ahead of `/usr/bin/python3`, and hakuspace's cava bar, dock autohide, desktop
+icons and wallpaper accent run a bare `python3` that needs Fedora's `gi` and `colorthief`. The same
+goes for bash: the `.bashrc` line activates mise only when `$-` contains `i`, and an older
+unconditional line is rewritten in place. `99-verify` checks the `python3` a fresh login shell
+resolves. One consequence: a hakuspace script run by hand from an interactive terminal, such as a wallpaper change, gets mise's `python3`, which has neither `gi` nor colorthief, so the wallpaper-derived accent does nothing there. Bindings and autostart are unaffected; to run one by hand, use `env PATH=/usr/bin:$PATH` in front of it.
+
 After editing `wm/niri-custom.kdl`:
 
 ```bash
@@ -747,14 +760,15 @@ The same file also adds what upstream has no opinion about:
 `Mod` is Super. `Mod+Shift+Slash` opens niri's own hotkey overlay, which is always the
 authoritative list for the machine in front of you. The first four tables are hakuspace's shipped
 `keybinds.kdl`; the last one is ours. Binds marked **overridden** are taken over by
-`config/hakucfg/wm/niri-custom.kdl` and do something else here. There are five of those:
-`Mod+Q`, `Mod+W`, `Mod+C`, `Mod+Shift+V` and `Mod+Tab`.
+`config/hakucfg/wm/niri-custom.kdl` and do something else here. There are four of those:
+`Mod+Q`, `Mod+C`, `Mod+Shift+V` and `Mod+Tab`.
 
 Keys inside the terminal (Neovim, tmux, kitty, fish and Claude Code) are in
 [Terminal and editor](#terminal-and-editor). None of them uses Super.
 
-The shape of the additions is macOS muscle memory, with Cmd as Mod: close is `Cmd+W` and `Cmd+Q`,
-copy-adjacent keys open the clipboard rather than destroying something, the launcher is Spotlight,
+The shape of the additions is macOS muscle memory, with Cmd as Mod: close is `Cmd+Q` (`Cmd+W` is
+left as upstream's dock toggle, because on macOS it closes one tab, and a compositor close there
+would end the whole window with every tab in it), copy-adjacent keys open the clipboard rather than destroying something, the launcher is Spotlight,
 and `Cmd+Tab` is the jump back to the previous window rather than Mission Control. Upstream points
 two reflexive keys at something that destroys work (`Mod+C` closes the focused window, `Mod+Shift+V`
 wipes the clipboard history), which is the reason those two are taken over. The rest of the macOS
@@ -779,7 +793,7 @@ undone by pressing the same key again.
 | `Mod+Y` / `Mod+Shift+Y` | Pick wallpaper / pick video wallpaper |
 | `Mod+L` | Night light toggle (**not** lock; the overlay mislabels it "Adjust Brightness") |
 | `Mod+T` | Cava underbar |
-| `Mod+W` | Dock toggle. **Overridden**: close window; the dock moves to `Mod+Shift+D` |
+| `Mod+W` | Dock toggle |
 | `Mod+Shift+W` / `Mod+Ctrl+W` | Cycle waybar mode / toggle waybar |
 | `Mod+F11` | Screen recording. Answers with a "Missing dependencies" notification here: `record.sh` hardcodes `wl-screenrec`, which Fedora does not package |
 | `Mod+Shift+E`, `Ctrl+Alt+Delete` | Quit niri |
@@ -788,7 +802,7 @@ undone by pressing the same key again.
 
 | Bind | Action |
 |---|---|
-| `Mod+C` | Close window. **Overridden**: clipboard menu. Close is `Mod+W` or `Mod+Q` |
+| `Mod+C` | Close window. **Overridden**: clipboard menu. Close is `Mod+Q` |
 | `Mod+Z` | Toggle floating |
 | `Mod+X` | Switch focus between floating and tiling |
 | `Mod+F` / `Mod+Shift+F` | Maximize column / fullscreen window |
@@ -844,8 +858,7 @@ as that file.
 | `Mod+Return` / `Mod+Shift+Return` | Terminal / floating scratch terminal (`kitty --class haku-scratch`, 45% wide) |
 | `Mod+Space` | App launcher (rofi drun) |
 | `Mod+Escape` | Lock the screen, via `lock.sh`. Upstream has no lock bind at all, because `Mod+L` is the night light |
-| `Mod+W`, `Mod+Q` | Close window. Takes both over from upstream |
-| `Mod+Shift+D` | Toggle the dock, displaced from `Mod+W` |
+| `Mod+Q` | Close window. Takes it over from upstream |
 | `Mod+C`, `Mod+Shift+V` | Clipboard menu. Takes both over from upstream |
 | `Mod+Ctrl+Shift+V` | Wipe the clipboard history, displaced from `Mod+Shift+V` onto a chord nobody types by reflex |
 | `Mod+Tab` | Focus the previous window. Takes over upstream's Haku menu bind |
@@ -1039,6 +1052,9 @@ kitty default. These are the deliberate trade-offs that remain:
 - **Diagnostics** colour the line number and show text on the current line only, leaving the sign
   column to git hunks. `Space l v` swaps to full virtual lines.
 - **Completion** is Neovim 0.12's native `autocomplete`, with no completion plugin.
+- **The Russian layout** leaves Normal-mode commands working: `langmap` maps each ЙЦУКЕН key to
+  the QWERTY key in the same position, so `цц` is `ww` and `о` is `j`. Insert mode still types
+  Cyrillic.
 - **Databases** come from `$DATABASE_URL` or connections added in the drawer. Never add a URL with a
   password through `Space d c`: the drawer saves connections as plain text. `~/.pgpass` (mode 0600)
   is where passwords belong.
@@ -1072,9 +1088,12 @@ kitty default. These are the deliberate trade-offs that remain:
   permission, and when it finishes a turn. The finish notice stays quiet only when the session is
   on screen in front of you: `claude` is in the foreground of the active window, in the active tab,
   of the focused kitty OS window, and niri's focused window is that kitty, checked over kitty remote
-  control and niri IPC. In the Neovim split the split must also be visible in Neovim's current tab.
-  Inside tmux or any other terminal it always notifies, and so does every permission prompt. Claude
-  Code's own terminal notification is switched off so nothing arrives twice.
+  control and niri IPC. Inside tmux it stays quiet when the pane is the active pane of its session's
+  active window, a client on that session holds terminal focus (tmux learns it through
+  `focus-events`, which kitty reports), and under niri the focused window hosts that client. In the
+  Neovim split, in either case, the split must also be visible in Neovim's current tab. In any other
+  terminal it always notifies, and so does every permission prompt. Claude Code's own terminal
+  notification is switched off so nothing arrives twice.
 - **`claude-scaffold [DIR]`** starts a project off with `.claude/settings.json`, an allowlist for
   that project's test, lint, format and type-check commands in Python and Node (pytest, ruff,
   basedpyright, mypy, npm and pnpm scripts, vitest, jest, tsc, eslint, biome, prettier, compose
@@ -1231,7 +1250,9 @@ Everything else about that installer is hostile to automation, so the phase work
 - **The whole thing runs under `timeout`**, 900 seconds by default. If it is still going when the
   budget expires it is killed and the phase dies, naming the log, `~/.backup` (the configs have
   already been moved there by then), and the knob: set `HAKUSPACE_INSTALL_TIMEOUT` in
-  `config.local.env` on a slow link.
+  `config.local.env` on a slow link. Expiry and Ctrl+C both reach the installer's whole process
+  tree, `sudo dnf` and `git` included, even from a plain terminal: the signal is relayed to it, and
+  whatever is still running after `HAKUSPACE_KILL_GRACE` seconds (20 by default) is killed.
 
 ---
 
@@ -1300,9 +1321,18 @@ full system upgrade, which is the main reason phases are separable.
 The one exception is a failure in `20-hakuspace` after the installer has run: it moves
 `~/.local/bin` and every hakuspace-owned config directory into `~/.backup`, and phases 30 and 40
 are what put this repo's own pieces back. Resume from phase 20, then let the rest of the run
-finish rather than stopping there.
+finish rather than stopping there. When phase 20 stops because hypridle or hyprlock never installed,
+it prints exactly that command, skipping only the earlier phases:
 
-**Something optional failed.** A dead COPR or a renamed package is recorded, not fatal. Look at
+```bash
+~/rice/bootstrap.sh --skip 00-system --skip 10-niri
+```
+
+**Something optional failed.** A dead COPR or a renamed package is recorded, not fatal, with one
+exception: phase 20 stops the bootstrap when hypridle or hyprlock did not install from
+`lionheartp/Hyprland` after about five minutes of retries, because nothing else locks the session.
+That is almost always a COPR outage: check that https://copr.fedorainfracloud.org loads, then run
+the resume command it printed. Look at
 the summary at the end of the run, or:
 
 ```bash
@@ -1610,9 +1640,10 @@ rice's Maintain screen keeps the pin meaningful.
   tmux makes, so rice maps Shift+Enter to `CSI 13;2u` only in windows titled `tmux ...`. The kitty
   map and tmux's `set-titles-string` depend on each other, and an edit to either breaks it;
   `99-verify` checks both. In another terminal or over ssh, use `prefix C-j` or `\` then Enter.
-- **The finish notification errs towards notifying.** Inside tmux, in a terminal other than kitty,
-  or for a `claude` started directly as a kitty window command, the focus test cannot prove the
-  session is on screen, so the notification shows.
+- **The finish notification errs towards notifying.** In a terminal other than kitty (outside
+  tmux), for a `claude` started directly as a kitty window command, or inside tmux under a terminal
+  that does not send focus events, the focus test cannot prove the session is on screen, so the
+  notification shows.
 - **The TypeScript server is chosen when a buffer attaches**, from `node_modules/typescript`. A fresh
   clone gets TypeScript 7's `tsc` until `npm install` and `:lsp restart`.
 - **TypeScript 7 from npm runs behind a small resident Node wrapper**, about 44 MB in front of the

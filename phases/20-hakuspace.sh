@@ -30,6 +30,8 @@ HAKUSPACE_REPO="https://github.com/hakuimaku/hakuspace.git"
 HAKUSPACE_ARCHIVE_REPO="https://github.com/hakuimaku/hakuspace-archive.git"
 HAKUSPACE_ARCHIVE_DIR="$HOME/hakuspace-archive"
 HAKUSPACE_INSTALL_TIMEOUT="${HAKUSPACE_INSTALL_TIMEOUT:-900}"
+# Seconds a signalled installer tree gets to exit before it is killed outright.
+HAKUSPACE_KILL_GRACE="${HAKUSPACE_KILL_GRACE:-20}"
 HAKUSPACE_MARKER="$RICE_STATE_DIR/hakuspace-installed"
 HAKUSPACE_BACKUP_DIR="$HOME/.backup"
 
@@ -98,8 +100,9 @@ HYPR_COPR="lionheartp/Hyprland"
 HYPR_COPR_PACKAGES=(hypridle hyprlock hyprpicker mpvpaper nwg-look)
 HYPR_COPR_INCLUDEPKGS=("${HYPR_COPR_PACKAGES[@]}" xcur2png hyprlang hyprutils hyprgraphics)
 HYPR_COPR_RETIRED="eli-xciv/hyprland"
-HYPR_COPR_ATTEMPTS="${HYPR_COPR_ATTEMPTS:-3}"
-HYPR_COPR_RETRY_DELAY="${HYPR_COPR_RETRY_DELAY:-20}"
+# Seconds to wait before each retry of the session lock install, about five
+# minutes in all, which rides out the COPR outages seen in practice.
+HYPR_COPR_RETRY_DELAYS="${HYPR_COPR_RETRY_DELAYS:-20 40 60 80 100}"
 HYPRIDLE_MIN_VERSION="0.1.8"
 # The only thing that locks the session, on idle, on lid close or before suspend.
 SESSION_LOCK_PACKAGES=(hypridle hyprlock)
@@ -107,9 +110,24 @@ SESSION_LOCK_PACKAGES=(hypridle hyprlock)
 # Fedora's own interpreter, which carries the RPM python modules hakuspace needs.
 # A bare python3 can resolve to a mise-managed one in the user's shell.
 SYSTEM_PYTHON="/usr/bin/python3"
+MISE_DATA_DIR_RESOLVED="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
 
 POWERPROFILESCTL_SYSTEM="/usr/bin/powerprofilesctl"
 POWERPROFILESCTL_SHIM_MARKER="rice-powerprofilesctl-shim"
+
+# Remove mise's tool and shim directories from PATH. Started from a shell that
+# activated mise, the bare python3 that install.sh, gen_style.sh and the wallpaper
+# scripts run would otherwise be a mise interpreter without Fedora's RPM modules.
+drop_mise_from_path() {
+    local parts=() kept=() entry IFS=:
+    read -ra parts <<< "$PATH"
+    for entry in "${parts[@]}"; do
+        [[ "$entry" == "$MISE_DATA_DIR_RESOLVED" || "$entry" == "$MISE_DATA_DIR_RESOLVED"/* ]] && continue
+        kept+=("$entry")
+    done
+    PATH="${kept[*]}"
+    export PATH
+}
 
 WORK_DIR=""
 cleanup() { [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]] && rm -rf "$WORK_DIR"; return 0; }
@@ -172,22 +190,60 @@ retire_hypr_copr() {
     fi
 }
 
-# Enable the hypr COPR, retrying a failed enable a few times. COPR's API has
-# outages lasting minutes, dnf does not retry past them, and this COPR carries
-# the session lock, so a transient failure is worth waiting out.
-enable_hypr_copr() {
-    local owner="${HYPR_COPR%%/*}" project="${HYPR_COPR##*/}" attempt=1
-    until is_dry_run || (( attempt >= HYPR_COPR_ATTEMPTS )) \
-        || compgen -G "/etc/yum.repos.d/_copr*${owner}*${project}*.repo" >/dev/null 2>&1; do
-        if sudo dnf copr enable -y "$HYPR_COPR"; then
-            log_ok "copr enabled: $HYPR_COPR"
+# True when dnf has a generated repo file for the hypr COPR.
+hypr_copr_enabled() {
+    local owner="${HYPR_COPR%%/*}" project="${HYPR_COPR##*/}"
+    compgen -G "/etc/yum.repos.d/_copr*${owner}*${project}*.repo" >/dev/null 2>&1
+}
+
+# Print the session lock packages that are not installed, one per line.
+session_lock_missing() {
+    local pkg
+    for pkg in "${SESSION_LOCK_PACKAGES[@]}"; do
+        pkg_installed "$pkg" || printf '%s\n' "$pkg"
+    done
+}
+
+# One try at the session lock: enable and restrict the hypr COPR when it is not
+# enabled yet, then install whichever lock packages are missing. Nothing is
+# recorded as a failure here, because the caller may still retry.
+session_lock_attempt() {
+    local missing=()
+    mapfile -t missing < <(session_lock_missing)
+    (( ${#missing[@]} == 0 )) && return 0
+    if ! hypr_copr_enabled; then
+        sudo dnf copr enable -y "$HYPR_COPR" || return 1
+        log_ok "copr enabled: $HYPR_COPR"
+    fi
+    copr_restrict "$HYPR_COPR" "${HYPR_COPR_INCLUDEPKGS[@]}"
+    sudo dnf install -y "${missing[@]}" || return 1
+    [[ -z "$(session_lock_missing)" ]]
+}
+
+# Install the session lock from the hypr COPR, retrying with a growing delay
+# from HYPR_COPR_RETRY_DELAYS. COPR's API and its download servers have outages
+# lasting minutes, dnf does not retry past them, and this COPR carries the only
+# thing that locks the session, so a transient failure is worth waiting out.
+# Always returns 0: require_session_lock decides what a missing lock means.
+wait_for_session_lock() {
+    is_dry_run && return 0
+    local delays=() attempt=1 total delay
+    read -ra delays <<< "$HYPR_COPR_RETRY_DELAYS"
+    total=$(( ${#delays[@]} + 1 ))
+    while :; do
+        if session_lock_attempt; then
+            (( attempt == 1 )) || log_ok "session lock installed on attempt $attempt of $total"
             return 0
         fi
-        log_warn "could not enable copr $HYPR_COPR (attempt $attempt of $HYPR_COPR_ATTEMPTS), retrying in ${HYPR_COPR_RETRY_DELAY}s"
-        sleep "$HYPR_COPR_RETRY_DELAY"
-        attempt=$((attempt + 1))
+        if (( attempt >= total )); then
+            log_warn "attempt $attempt of $total to install the session lock from copr $HYPR_COPR failed, giving up"
+            return 0
+        fi
+        delay="${delays[attempt - 1]}"
+        log_warn "attempt $attempt of $total to install the session lock from copr $HYPR_COPR failed, retrying in ${delay}s"
+        sleep "$delay"
+        attempt=$(( attempt + 1 ))
     done
-    copr_enable "$HYPR_COPR"
 }
 
 # pkg_install leaves an installed package alone, so builds that arrived from the
@@ -314,7 +370,8 @@ install_packages() {
     # they work here without Hyprland, and accent_color_picker.sh shells out to
     # hyprpicker. See HYPR_COPR for why the COPR is restricted.
     retire_hypr_copr
-    if enable_hypr_copr; then
+    wait_for_session_lock
+    if copr_enable "$HYPR_COPR"; then
         copr_restrict "$HYPR_COPR" "${HYPR_COPR_INCLUDEPKGS[@]}"
         upgrade_hypr_packages
         pkg_install "${HYPR_COPR_PACKAGES[@]}"
@@ -452,17 +509,35 @@ install_colorthief() {
 
 # -------------------------------------------------------------- session lock -----
 
+# Print the bootstrap command that resumes a run stopped in this phase: every
+# phase before this one is skipped, this one and every later one runs.
+resume_command() {
+    local self phase name skip=()
+    self="$(basename -- "${BASH_SOURCE[0]}" .sh)"
+    for phase in "$RICE_ROOT"/phases/*.sh; do
+        name="$(basename -- "$phase" .sh)"
+        [[ "$name" < "$self" ]] && skip+=(--skip "$name")
+    done
+    printf '%s\n' "$RICE_ROOT/bootstrap.sh${skip[*]:+ ${skip[*]}}"
+}
+
 # Fail the phase when the session lock is missing. Without hypridle and hyprlock
-# a lid close or a suspend leaves the session unlocked, so this is not an
-# optional item, and a failed phase keeps prompting for a re-run.
+# a lid close or a suspend leaves the session unlocked, which is worse than an
+# unfinished install, so this stops the bootstrap rather than being recorded.
 require_session_lock() {
     is_dry_run && return 0
-    local pkg missing=()
-    for pkg in "${SESSION_LOCK_PACKAGES[@]}"; do
-        pkg_installed "$pkg" || missing+=("$pkg")
-    done
+    local missing=() delays=() delay waited=0
+    mapfile -t missing < <(session_lock_missing)
     (( ${#missing[@]} == 0 )) && return 0
-    die "${missing[*]} did not install from copr $HYPR_COPR, so nothing locks the session on idle, lid close or suspend. COPR outages are usually brief: re-run this phase."
+
+    read -ra delays <<< "$HYPR_COPR_RETRY_DELAYS"
+    for delay in "${delays[@]}"; do waited=$(( waited + delay )); done
+    log_err "${missing[*]} could not be installed from copr $HYPR_COPR after $(( ${#delays[@]} + 1 )) attempts over ${waited}s"
+    log_err "without them nothing locks the session on idle, lid close or suspend, so the bootstrap stops here"
+    log_err "this is almost always a COPR outage: check that https://copr.fedorainfracloud.org loads, then resume with"
+    log_err "  $(resume_command)"
+    log_err "which runs this phase and every one after it. --only $(basename -- "${BASH_SOURCE[0]}" .sh) would run this phase alone and leave the later ones undone"
+    die "session lock missing: ${missing[*]}"
 }
 
 # -------------------------------------------------------- power profiles -----
@@ -906,6 +981,47 @@ write_answers() {
 
 log_has() { grep -aqF "$2" "$1" 2>/dev/null; }
 
+# Run a command under timeout so that expiry and an interrupt both take down its
+# whole process tree. timeout moves itself into a process group of its own, which
+# a terminal's Ctrl+C never reaches, so it runs in the background here while INT,
+# TERM and HUP are relayed to it. timeout passes the signal to its group and sends
+# KILL once HAKUSPACE_KILL_GRACE runs out. Group members that outlive the command,
+# such as jobs it backgrounded, then get TERM and the same grace before KILL. A
+# relayed signal is re-raised on this shell.
+run_timeout_tree() {
+    local seconds="$1" pid rc=0 caught=""
+    shift
+    # bash starts a background job with INT and QUIT ignored, and timeout keeps an
+    # inherited ignore instead of catching the signal, passing it on to the whole
+    # tree. Resetting them first is what lets a relayed INT do anything at all.
+    env --default-signal=INT,QUIT \
+        timeout --kill-after="$HAKUSPACE_KILL_GRACE" "$seconds" "$@" 0<&0 &
+    pid=$!
+    trap 'caught=INT; kill -INT "$pid" 2>/dev/null || true' INT
+    trap 'caught=TERM; kill -TERM "$pid" 2>/dev/null || true' TERM
+    trap 'caught=HUP; kill -HUP "$pid" 2>/dev/null || true' HUP
+    while :; do
+        rc=0
+        wait "$pid" || rc=$?
+        kill -0 "$pid" 2>/dev/null || break
+    done
+    trap - INT TERM HUP
+    if [[ -n "$caught" ]] || (( rc == 124 || rc == 137 )); then
+        # Survivors get the same grace timeout gave the command: a sudo'd dnf killed
+        # outright can leave its transaction half applied.
+        kill -TERM -- "-$pid" 2>/dev/null || true
+        local deadline=$(( SECONDS + HAKUSPACE_KILL_GRACE ))
+        while kill -0 -- "-$pid" 2>/dev/null && (( SECONDS < deadline )); do
+            sleep 0.2
+        done
+        kill -KILL -- "-$pid" 2>/dev/null || true
+    fi
+    if [[ -n "$caught" ]]; then
+        kill -s "$caught" "$BASHPID"
+    fi
+    return "$rc"
+}
+
 report_installer_errors() {
     local log="$1" errors
     errors="$(grep -aF '[ERROR]' "$log" 2>/dev/null | grep -avE "$HAKUSPACE_BENIGN_ERRORS" || true)"
@@ -1006,15 +1122,21 @@ run_installer() {
     # install.sh resolves ./scripts relative to the working directory and dies on
     # an unbound variable from anywhere else, so the cd is not optional. SHELL is
     # set to the path it will look for itself, which is what makes it skip chsh.
-    local rc=0 fish
+    local rc=0 fish started=$SECONDS
     fish="$(installer_fish)"
     (
         cd "$HAKUSPACE_DIR" || exit 1
         if [[ -n "$fish" ]]; then export SHELL="$fish"; fi
-        exec timeout "$HAKUSPACE_INSTALL_TIMEOUT" ./install.sh
+        run_timeout_tree "$HAKUSPACE_INSTALL_TIMEOUT" ./install.sh
     ) < "$answers" > "$log" 2>&1 || rc=$?
 
-    if (( rc == 124 )); then
+    if (( rc == 130 || rc == 143 || rc == 129 )); then
+        log_err "install.sh was interrupted and stopped, see $log"
+        log_err "anything it had already replaced was MOVED to $HAKUSPACE_BACKUP_DIR/Backup_*"
+        exit "$rc"
+    fi
+    # 137 is timeout's status when the grace period ran out and KILL was needed.
+    if (( rc == 124 || (rc == 137 && SECONDS - started >= HAKUSPACE_INSTALL_TIMEOUT) )); then
         die "install.sh did not finish within ${HAKUSPACE_INSTALL_TIMEOUT}s and was killed, see $log. Whatever it had already replaced was MOVED to $HAKUSPACE_BACKUP_DIR/Backup_*, so look there for your previous configs. Raise HAKUSPACE_INSTALL_TIMEOUT in $RICE_ROOT/config.local.env on a slow link, or run it by hand: cd $HAKUSPACE_DIR && ./install.sh"
     fi
 
@@ -1118,6 +1240,7 @@ verify_deployment() {
     log_ok "hakuspace deployed: ~/.config/niri, ~/.local/bin/gen_style.sh, ~/hakucfg/setting.sh"
 }
 
+drop_mise_from_path
 install_packages
 install_powerprofilesctl_shim
 install_nerd_font

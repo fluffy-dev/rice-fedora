@@ -40,6 +40,9 @@ MISE_SHIMS_DIR="${MISE_DATA_DIR:-$HOME/.local/share/mise}/shims"
 HAKUCFG_DIR="$HOME/hakucfg"
 HYPRIDLE_OVERRIDE="$HAKUCFG_DIR/hypridle.conf"
 HYPRIDLE_MIN_VERSION="0.1.8"
+SYSTEM_PYTHON="/usr/bin/python3"
+SESSION_BASE_PATH="/usr/local/bin:/usr/bin"
+ENVIRONMENT_D_GENERATOR="/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator"
 TREE_SITTER_MIN_VERSION="0.26.1"
 LOGIND_LID_DROPIN="/etc/systemd/logind.conf.d/60-rice-lid.conf"
 GDM_DCONF_DIR="/etc/dconf/db/gdm.d"
@@ -880,7 +883,7 @@ check_hypr_copr() {
 check_hypridle() {
     local out="" version=""
     if ! command -v hypridle >/dev/null 2>&1; then
-        v_fail "hypridle" "not installed, so the session never dims, locks or suspends on idle; re-run phase 20-hakuspace"
+        v_fail_essential "hypridle" "not installed, so the session never dims, locks or suspends on idle; re-run phase 20-hakuspace"
         return 0
     fi
     out="$(bounded 10 hypridle -V </dev/null 2>&1 || true)"
@@ -893,6 +896,77 @@ check_hypridle() {
         v_pass "hypridle" "$version"
     else
         v_fail "hypridle" "$version is older than $HYPRIDLE_MIN_VERSION and ignores condition_cmd; re-run phase 20-hakuspace"
+    fi
+}
+
+# hyprlock is the lock screen itself: hypridle, lock.sh and the lid all hand off to it.
+check_hyprlock() {
+    local version=""
+    if ! command -v hyprlock >/dev/null 2>&1; then
+        v_fail_essential "hyprlock" "not installed, so nothing locks the session on idle, lid close or suspend; re-run phase 20-hakuspace"
+        return 0
+    fi
+    version="$(rpm -q --qf '%{VERSION}' hyprlock 2>/dev/null || true)"
+    [[ "$version" =~ ^[0-9] ]] || version="$(command -v hyprlock)"
+    v_pass "hyprlock" "$version"
+}
+
+# The PATH every process of the next niri login inherits, printed on stdout.
+#
+# niri-session re-execs itself through the login shell and then imports that
+# shell's environment into the user manager, which replaces the PATH environment.d
+# built. So when the login shell qualifies the way niri-session tests it, that
+# shell decides, started the same way: a clean environment, a login shell given
+# -c and no terminal, so startup code guarded by an interactive test stays off.
+# Otherwise the environment.d generator decides, which only prints.
+session_path() {
+    local shell="" out=""
+    shell="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)"
+    shell="${shell:-${SHELL:-}}"
+    if [[ -n "$shell" && -x "$shell" && "$shell" != *false* && "$shell" != *nologin* ]] \
+        && grep -qF -- "$shell" /etc/shells 2>/dev/null; then
+        # shellcheck disable=SC2016  # $0 expands in the inner bash, which execs the shell as a login shell
+        out="$(bounded 20 env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" SHELL="$shell" \
+            PATH="$SESSION_BASE_PATH" bash -c 'exec -l "$0" -c env' "$shell" </dev/null 2>/dev/null || true)"
+    elif [[ -x "$ENVIRONMENT_D_GENERATOR" ]]; then
+        out="$(bounded 10 env -i HOME="$HOME" PATH="$SESSION_BASE_PATH" "$ENVIRONMENT_D_GENERATOR" </dev/null 2>/dev/null || true)"
+    else
+        out="PATH=$SESSION_BASE_PATH"
+    fi
+    sed -n 's/^PATH=//p' <<<"$out" | head -n 1
+}
+
+# hakuspace's cava bar, dock autohide, desktop icons and wallpaper accent run a
+# bare python3 and need Fedora's, the only one with the RPM gi bindings. A
+# runtime manager activated in the login shell can put its own python3 first.
+check_session_python() {
+    local path="" dir python="" resolved="" system="" dirs=()
+    path="$(session_path)"
+    if [[ -z "$path" ]]; then
+        v_skip "session python3" "could not work out the login session's PATH"
+        return 0
+    fi
+    IFS=: read -r -a dirs <<<"$path"
+    for dir in "${dirs[@]}"; do
+        [[ -n "$dir" && -x "$dir/python3" && ! -d "$dir/python3" ]] || continue
+        python="$dir/python3"
+        break
+    done
+    if [[ -z "$python" ]]; then
+        v_fail "session python3" "no python3 on the login session's PATH; re-run phase 20-hakuspace"
+        return 0
+    fi
+    resolved="$(readlink -f -- "$python" 2>/dev/null || printf '%s' "$python")"
+    system="$(readlink -f -- "$SYSTEM_PYTHON" 2>/dev/null || printf '%s' "$SYSTEM_PYTHON")"
+    if [[ "$resolved" == "$system" ]]; then
+        v_pass "session python3" "$python, the system interpreter"
+    else
+        v_fail "session python3" "$python comes before $SYSTEM_PYTHON in the login session, so the cava bar, dock autohide and desktop icons lose gi; re-run phase 40-dev and log in again"
+    fi
+    if bounded 20 env -i HOME="$HOME" PATH="$path" "$python" -B -c 'import gi' </dev/null >/dev/null 2>&1; then
+        v_pass "session python3 gi" "$python imports gi"
+    else
+        v_fail "session python3 gi" "$python cannot import gi, so hakuspace reports python3-gi missing; install python3-gobject (phase 20-hakuspace)"
     fi
 }
 
@@ -1157,6 +1231,8 @@ check_keyboard
 check_accent_helper
 check_hypr_copr
 check_hypridle
+check_hyprlock
+check_session_python
 check_powerprofilesctl
 check_docker
 check_kubectl
